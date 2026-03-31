@@ -5,7 +5,7 @@ export interface PolicyParameter {
   min: number;
   max: number;
   unit: string;
-  impact: number; // Impact on life expectancy per unit
+  impact: number; // Impact on ADI (Area Deprivation Index) per unit
 }
 
 export interface PolicyArea {

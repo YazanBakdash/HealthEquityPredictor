@@ -471,7 +471,7 @@ export default function App() {
                   </div>
                 </div>
                 <p className="text-[9px] font-medium opacity-60 mt-1">
-                  Avg. Years Life Expectancy
+                  Average ADI
                 </p>
               </div>
             </div>
@@ -515,7 +515,7 @@ export default function App() {
               {/* Legend */}
               <div className="absolute bottom-6 left-6 glass-panel p-4 rounded-lg shadow-xl border border-white/50 pointer-events-auto">
                 <h4 className="text-[10px] font-bold text-secondary uppercase mb-3 tracking-widest">
-                  Life Expectancy (Years)
+                  ADI (Area Deprivation Index)
                 </h4>
                 <div className="flex flex-col gap-2">
                   {[
@@ -552,9 +552,9 @@ export default function App() {
                       <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
                     </div>
                     <div className="flex justify-between items-baseline">
-                      <span className="text-[10px] text-secondary">Predicted Expectancy</span>
+                      <span className="text-[10px] text-secondary">Predicted ADI</span>
                       <span className="text-sm font-bold text-on-surface">
-                        {getTractOutcomeValue(hoveredTract.CENSUS_T_1 || hoveredTract.CENSUS_TRA || '0').toFixed(1)} yrs
+                        {getTractOutcomeValue(hoveredTract.CENSUS_T_1 || hoveredTract.CENSUS_TRA || '0').toFixed(1)}
                       </span>
                     </div>
                     <div className="w-full bg-surface-container h-1 rounded-full mt-1 overflow-hidden">

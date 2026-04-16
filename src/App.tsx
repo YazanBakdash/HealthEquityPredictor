@@ -18,6 +18,9 @@ import { INITIAL_POLICY_AREAS, BASE_LIFE_EXPECTANCY } from './constants';
 import { PolicyArea, SimulationState } from './types';
 
 const CHICAGO_GEOJSON_URL = '/census_tracts.json';
+const TREE_CANOPY_CSV_URL = '/tract_tree_canopy.csv';
+
+export type MapViewMode = 'adi' | 'canopy';
 
 const getTractColor = (tractId: string, globalParams: Record<string, number>, overrides: Record<string, Record<string, number>>) => {
   let outcome = BASE_LIFE_EXPECTANCY;
@@ -52,8 +55,7 @@ const D3Map = ({
   selectedTractId,
   setSelectedTractId,
   setMousePos,
-  globalParams,
-  overrides
+  fillForTract,
 }: { 
   data: any, 
   width: number, 
@@ -63,8 +65,7 @@ const D3Map = ({
   selectedTractId: string | null,
   setSelectedTractId: (id: string | null) => void,
   setMousePos: (p: { x: number, y: number }) => void,
-  globalParams: Record<string, number>,
-  overrides: Record<string, Record<string, number>>
+  fillForTract: (tractId: string) => string,
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const [transform, setTransform] = useState(d3.zoomIdentity);
@@ -129,8 +130,8 @@ const D3Map = ({
           {data.features.map((feature: any, i: number) => {
             const props = feature.properties;
             // Use CENSUS_T_1 or CENSUS_TRA from the new GeoJSON
-            const tractId = props.CENSUS_T_1 || props.CENSUS_TRA || String(i);
-            const color = getTractColor(tractId, globalParams, overrides);
+            const tractId = String(props.CENSUS_T_1 || props.CENSUS_TRA || i);
+            const color = fillForTract(tractId);
             const isHovered = hoveredTract && (
               (hoveredTract.CENSUS_T_1 && hoveredTract.CENSUS_T_1 === props.CENSUS_T_1) || 
               (hoveredTract.CENSUS_TRA && hoveredTract.CENSUS_TRA === props.CENSUS_TRA)
@@ -183,6 +184,9 @@ export default function App() {
   const [tractOverrides, setTractOverrides] = useState<Record<string, Record<string, number>>>({});
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [isLoadingMap, setIsLoadingMap] = useState(true);
+  const [mapView, setMapView] = useState<MapViewMode>('adi');
+  const [canopyByTract, setCanopyByTract] = useState<Record<string, number> | null>(null);
+  const [isLoadingCanopy, setIsLoadingCanopy] = useState(true);
 
   useEffect(() => {
     setIsLoadingMap(true);
@@ -200,6 +204,60 @@ export default function App() {
         setIsLoadingMap(false);
       });
   }, []);
+
+  useEffect(() => {
+    setIsLoadingCanopy(true);
+    fetch(TREE_CANOPY_CSV_URL)
+      .then((res) => {
+        if (!res.ok) throw new Error(`Canopy CSV: ${res.status}`);
+        return res.text();
+      })
+      .then((text) => {
+        const map: Record<string, number> = {};
+        const lines = text.trim().split(/\r?\n/);
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i];
+          const comma = line.indexOf(',');
+          if (comma === -1) continue;
+          const id = line.slice(0, comma).trim();
+          const v = parseFloat(line.slice(comma + 1));
+          if (id && !Number.isNaN(v)) map[id] = v;
+        }
+        setCanopyByTract(map);
+        setIsLoadingCanopy(false);
+      })
+      .catch((err) => {
+        console.error('Failed to load tree canopy data:', err);
+        setCanopyByTract(null);
+        setIsLoadingCanopy(false);
+      });
+  }, []);
+
+  const canopyExtent = useMemo((): [number, number] => {
+    if (!canopyByTract || Object.keys(canopyByTract).length === 0) return [0, 40];
+    const vals = Object.values(canopyByTract).filter((v): v is number => typeof v === 'number' && !Number.isNaN(v));
+    if (vals.length === 0) return [0, 40];
+    const lo = d3.min(vals) ?? 0;
+    const hi = d3.max(vals) ?? 40;
+    if (lo === hi) return [Math.max(0, lo - 1), hi + 1];
+    return [lo, hi];
+  }, [canopyByTract]);
+
+  const canopyColorScale = useMemo(
+    () => d3.scaleSequential(d3.interpolateYlGn).domain(canopyExtent),
+    [canopyExtent],
+  );
+
+  const fillForTract = useMemo(() => {
+    if (mapView === 'canopy' && canopyByTract) {
+      return (tractId: string) => {
+        const v = canopyByTract[tractId];
+        if (v === undefined || Number.isNaN(v)) return '#cbd5e1';
+        return canopyColorScale(v);
+      };
+    }
+    return (tractId: string) => getTractColor(tractId, parameterValues, tractOverrides);
+  }, [mapView, canopyByTract, canopyColorScale, parameterValues, tractOverrides]);
 
   const currentArea = useMemo(() => 
     INITIAL_POLICY_AREAS.find(a => a.id === currentAreaId) || null
@@ -504,32 +562,86 @@ export default function App() {
                   selectedTractId={selectedTractId}
                   setSelectedTractId={setSelectedTractId}
                   setMousePos={setMousePos}
-                  globalParams={parameterValues}
-                  overrides={tractOverrides}
+                  fillForTract={fillForTract}
                 />
               )}
             </div>
             
             {/* Map UI Overlays */}
             <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+              {/* Layer toggle */}
+              <div className="absolute top-6 right-6 flex rounded-lg border border-outline-variant/30 bg-white/95 shadow-lg backdrop-blur-sm pointer-events-auto overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setMapView('adi')}
+                  className={`px-3 py-2 text-[11px] font-bold uppercase tracking-wide transition-colors ${
+                    mapView === 'adi'
+                      ? 'bg-primary text-white'
+                      : 'text-secondary hover:bg-surface-container-high'
+                  }`}
+                >
+                  ADI
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMapView('canopy')}
+                  className={`flex items-center gap-1.5 px-3 py-2 text-[11px] font-bold uppercase tracking-wide transition-colors border-l border-outline-variant/20 ${
+                    mapView === 'canopy'
+                      ? 'bg-emerald-700 text-white'
+                      : 'text-secondary hover:bg-surface-container-high'
+                  }`}
+                >
+                  <TreePine className="w-3.5 h-3.5" />
+                  Tree canopy
+                </button>
+              </div>
+
               {/* Legend */}
-              <div className="absolute bottom-6 left-6 glass-panel p-4 rounded-lg shadow-xl border border-white/50 pointer-events-auto">
-                <h4 className="text-[10px] font-bold text-secondary uppercase mb-3 tracking-widest">
-                  ADI (Area Deprivation Index)
-                </h4>
-                <div className="flex flex-col gap-2">
-                  {[
-                    { color: 'bg-error', label: '68 - 72' },
-                    { color: 'bg-[#E98D8D]', label: '72 - 76' },
-                    { color: 'bg-[#AEC7F7]', label: '76 - 80' },
-                    { color: 'bg-success', label: '80 - 84+' },
-                  ].map((item, i) => (
-                    <div key={i} className="flex items-center gap-2">
-                      <div className={`w-3 h-3 rounded-sm ${item.color}`} />
-                      <span className="text-[11px] font-semibold text-on-surface">{item.label}</span>
+              <div className="absolute bottom-6 left-6 glass-panel p-4 rounded-lg shadow-xl border border-white/50 pointer-events-auto max-w-[220px]">
+                {mapView === 'adi' ? (
+                  <>
+                    <h4 className="text-[10px] font-bold text-secondary uppercase mb-3 tracking-widest">
+                      ADI (Area Deprivation Index)
+                    </h4>
+                    <div className="flex flex-col gap-2">
+                      {[
+                        { color: 'bg-error', label: '68 - 72' },
+                        { color: 'bg-[#E98D8D]', label: '72 - 76' },
+                        { color: 'bg-[#AEC7F7]', label: '76 - 80' },
+                        { color: 'bg-success', label: '80 - 84+' },
+                      ].map((item, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <div className={`w-3 h-3 rounded-sm ${item.color}`} />
+                          <span className="text-[11px] font-semibold text-on-surface">{item.label}</span>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  </>
+                ) : (
+                  <>
+                    <h4 className="text-[10px] font-bold text-secondary uppercase mb-2 tracking-widest flex items-center gap-1.5">
+                      <TreePine className="w-3 h-3" />
+                      Tree canopy cover
+                    </h4>
+                    <p className="text-[10px] text-secondary mb-3 leading-snug">
+                      Chicago Health Atlas CHAKUCW_2017 (% canopy by community area, applied to each tract).
+                    </p>
+                    <div
+                      className="h-3 w-full rounded mb-2 border border-outline-variant/20"
+                      style={{
+                        background: `linear-gradient(to right, ${d3.interpolateYlGn(0)}, ${d3.interpolateYlGn(0.5)}, ${d3.interpolateYlGn(1)})`,
+                      }}
+                    />
+                    <div className="flex justify-between text-[10px] font-semibold text-on-surface tabular-nums">
+                      <span>{canopyExtent[0].toFixed(1)}%</span>
+                      <span>{canopyExtent[1].toFixed(1)}%</span>
+                    </div>
+                    <div className="flex items-center gap-2 mt-3">
+                      <div className="w-3 h-3 rounded-sm bg-slate-300 border border-slate-400/50" />
+                      <span className="text-[10px] text-secondary">No data</span>
+                    </div>
+                  </>
+                )}
               </div>
 
               {/* Floating Tooltip (Hover State) */}
@@ -552,18 +664,28 @@ export default function App() {
                       <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
                     </div>
                     <div className="flex justify-between items-baseline">
-                      <span className="text-[10px] text-secondary">Predicted ADI</span>
+                      <span className="text-[10px] text-secondary">
+                        {mapView === 'canopy' ? 'Tree canopy' : 'Predicted ADI'}
+                      </span>
                       <span className="text-sm font-bold text-on-surface">
-                        {getTractOutcomeValue(hoveredTract.CENSUS_T_1 || hoveredTract.CENSUS_TRA || '0').toFixed(1)}
+                        {mapView === 'canopy' && canopyByTract
+                          ? (() => {
+                              const tid = String(hoveredTract.CENSUS_T_1 || hoveredTract.CENSUS_TRA || '');
+                              const p = canopyByTract[tid];
+                              return p !== undefined ? `${p.toFixed(1)}%` : '—';
+                            })()
+                          : getTractOutcomeValue(hoveredTract.CENSUS_T_1 || hoveredTract.CENSUS_TRA || '0').toFixed(1)}
                       </span>
                     </div>
-                    <div className="w-full bg-surface-container h-1 rounded-full mt-1 overflow-hidden">
-                      <motion.div 
-                        initial={{ width: "40%" }}
-                        animate={{ width: "60%" }}
-                        className="bg-primary h-full" 
-                      />
-                    </div>
+                    {mapView !== 'canopy' && (
+                      <div className="w-full bg-surface-container h-1 rounded-full mt-1 overflow-hidden">
+                        <motion.div 
+                          initial={{ width: "40%" }}
+                          animate={{ width: "60%" }}
+                          className="bg-primary h-full" 
+                        />
+                      </div>
+                    )}
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -571,7 +693,7 @@ export default function App() {
 
             {/* Simulation Overlay */}
             <AnimatePresence>
-              {(isSimulating || isLoadingMap) && (
+              {(isSimulating || isLoadingMap || isLoadingCanopy) && (
                 <motion.div 
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
@@ -586,7 +708,11 @@ export default function App() {
                       <Activity className="w-12 h-12 text-primary" />
                     </motion.div>
                     <span className="font-bold text-primary">
-                      {isLoadingMap ? 'Initializing Geospatial Data...' : 'Recalculating Geospatial Data...'}
+                      {isLoadingMap
+                        ? 'Initializing Geospatial Data...'
+                        : isLoadingCanopy
+                          ? 'Loading tree canopy layer...'
+                          : 'Recalculating Geospatial Data...'}
                     </span>
                   </div>
                 </motion.div>

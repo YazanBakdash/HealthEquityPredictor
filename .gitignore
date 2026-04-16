@@ -8,5 +8,4 @@ coverage/
 __pycache__/
 *.py[cod]
 inputs_raw/
-inputs_processed/
 processed/

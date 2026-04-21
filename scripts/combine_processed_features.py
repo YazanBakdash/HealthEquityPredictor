@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 try:
@@ -21,6 +20,7 @@ TRACTS_PATH = ROOT / "public" / "census_tracts.json"
 HEALTH_ATLAS_CANOPY_CSV = PROCESSED / "tract_tree_canopy_health_atlas.csv"
 OUT_PATH = PROCESSED / "all_tract_features.csv"
 PUBLIC_TREE_CANOPY_CSV = ROOT / "public" / "tract_tree_canopy.csv"
+PUBLIC_ALL_FEATURES_CSV = ROOT / "public" / "all_tract_features.csv"
 
 
 def _normalize_tract_series(series: pd.Series) -> pd.Series:
@@ -114,8 +114,12 @@ def main() -> None:
     )
     out["School_Density"] = out["census_tract"].map(school_counts).fillna(0).astype(float)
 
-    # No square footage field appears to exist in the library source file.
-    out["Library_Square"] = np.nan
+    lib_path = (
+        PROCESSED
+        / "Libraries_-_Locations,__Contact_Information,_and_Usual_Hours_of_Operation_20260415_with_tracts.csv"
+    )
+    library_counts = _count_by_tract(lib_path, "CENSUS_TRACT")
+    out["Library_Count"] = out["census_tract"].map(library_counts).fillna(0).astype(float)
 
     # Economic Development
     biz = pd.read_csv(
@@ -150,6 +154,11 @@ def main() -> None:
             f"Could not write {OUT_PATH} (close the file if it is open in another program). "
             f"Wrote {len(out):,} rows to {alt} instead."
         )
+    try:
+        PUBLIC_ALL_FEATURES_CSV.parent.mkdir(parents=True, exist_ok=True)
+        out.to_csv(PUBLIC_ALL_FEATURES_CSV, index=False)
+    except OSError as e:
+        print(f"Note: could not write {PUBLIC_ALL_FEATURES_CSV}: {e}")
     print("Columns:", ", ".join(out.columns))
 
 

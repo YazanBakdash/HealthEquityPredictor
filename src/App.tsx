@@ -15,12 +15,50 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import * as d3 from 'd3';
 import { INITIAL_POLICY_AREAS, BASE_LIFE_EXPECTANCY } from './constants';
-import { PolicyArea, SimulationState } from './types';
+import {
+  ALL_TRACT_FEATURES_CSV_URL,
+  MAP_LAYER_ORDER,
+  parseTractFeaturesCsv,
+  layerMeta,
+  type MapLayerId,
+  type LayerMeta,
+} from './mapLayers';
 
 const CHICAGO_GEOJSON_URL = '/census_tracts.json';
-const TREE_CANOPY_CSV_URL = '/tract_tree_canopy.csv';
 
-export type MapViewMode = 'adi' | 'canopy';
+function interpolatorFromRamp(ramp: LayerMeta['colorRamp']) {
+  switch (ramp) {
+    case 'ylgn':
+      return d3.interpolateYlGn;
+    case 'blues':
+      return d3.interpolateBlues;
+    case 'viridis':
+      return d3.interpolateViridis;
+    case 'oranges':
+      return d3.interpolateOranges;
+    case 'purples':
+      return d3.interpolatePurples;
+    case 'reds':
+      return d3.interpolateReds;
+    case 'greens':
+      return d3.interpolateGreens;
+    case 'greys':
+      return d3.interpolateGreys;
+    case 'teal':
+      return d3.interpolatePuBuGn;
+    case 'magma':
+      return d3.interpolateMagma;
+    default:
+      return d3.interpolateBlues;
+  }
+}
+
+function formatLayerValue(layerId: MapLayerId, v: number): string {
+  if (!Number.isFinite(v)) return '—';
+  const meta = layerMeta(layerId);
+  const d = meta?.decimals ?? 1;
+  return `${v.toFixed(d)}${meta?.unit ?? ''}`;
+}
 
 const getTractColor = (tractId: string, globalParams: Record<string, number>, overrides: Record<string, Record<string, number>>) => {
   let outcome = BASE_LIFE_EXPECTANCY;
@@ -184,9 +222,9 @@ export default function App() {
   const [tractOverrides, setTractOverrides] = useState<Record<string, Record<string, number>>>({});
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [isLoadingMap, setIsLoadingMap] = useState(true);
-  const [mapView, setMapView] = useState<MapViewMode>('adi');
-  const [canopyByTract, setCanopyByTract] = useState<Record<string, number> | null>(null);
-  const [isLoadingCanopy, setIsLoadingCanopy] = useState(true);
+  const [mapLayerId, setMapLayerId] = useState<MapLayerId>('adi');
+  const [tractFeatures, setTractFeatures] = useState<Map<string, Record<string, number>> | null>(null);
+  const [isLoadingFeatures, setIsLoadingFeatures] = useState(true);
 
   useEffect(() => {
     setIsLoadingMap(true);
@@ -206,58 +244,59 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    setIsLoadingCanopy(true);
-    fetch(TREE_CANOPY_CSV_URL)
+    setIsLoadingFeatures(true);
+    fetch(ALL_TRACT_FEATURES_CSV_URL)
       .then((res) => {
-        if (!res.ok) throw new Error(`Canopy CSV: ${res.status}`);
+        if (!res.ok) throw new Error(`Features CSV: ${res.status}`);
         return res.text();
       })
       .then((text) => {
-        const map: Record<string, number> = {};
-        const lines = text.trim().split(/\r?\n/);
-        for (let i = 1; i < lines.length; i++) {
-          const line = lines[i];
-          const comma = line.indexOf(',');
-          if (comma === -1) continue;
-          const id = line.slice(0, comma).trim();
-          const v = parseFloat(line.slice(comma + 1));
-          if (id && !Number.isNaN(v)) map[id] = v;
-        }
-        setCanopyByTract(map);
-        setIsLoadingCanopy(false);
+        setTractFeatures(parseTractFeaturesCsv(text));
+        setIsLoadingFeatures(false);
       })
       .catch((err) => {
-        console.error('Failed to load tree canopy data:', err);
-        setCanopyByTract(null);
-        setIsLoadingCanopy(false);
+        console.error('Failed to load tract features:', err);
+        setTractFeatures(null);
+        setIsLoadingFeatures(false);
       });
   }, []);
 
-  const canopyExtent = useMemo((): [number, number] => {
-    if (!canopyByTract || Object.keys(canopyByTract).length === 0) return [0, 40];
-    const vals = Object.values(canopyByTract).filter((v): v is number => typeof v === 'number' && !Number.isNaN(v));
-    if (vals.length === 0) return [0, 40];
-    const lo = d3.min(vals) ?? 0;
-    const hi = d3.max(vals) ?? 40;
-    if (lo === hi) return [Math.max(0, lo - 1), hi + 1];
-    return [lo, hi];
-  }, [canopyByTract]);
+  const activeLayerMeta = useMemo(() => layerMeta(mapLayerId), [mapLayerId]);
 
-  const canopyColorScale = useMemo(
-    () => d3.scaleSequential(d3.interpolateYlGn).domain(canopyExtent),
-    [canopyExtent],
-  );
+  const featureExtent = useMemo((): [number, number] | null => {
+    if (mapLayerId === 'adi' || !tractFeatures) return null;
+    const vals: number[] = [];
+    tractFeatures.forEach((row) => {
+      const v = row[mapLayerId];
+      if (typeof v === 'number' && Number.isFinite(v)) vals.push(v);
+    });
+    if (vals.length === 0) return [0, 1];
+    const lo = d3.min(vals) ?? 0;
+    const hi = d3.max(vals) ?? 1;
+    if (lo === hi) return [lo - 1e-9, hi + 1e-9];
+    return [lo, hi];
+  }, [mapLayerId, tractFeatures]);
+
+  const featureColorScale = useMemo(() => {
+    if (mapLayerId === 'adi' || !featureExtent || !activeLayerMeta) return null;
+    const interp = interpolatorFromRamp(activeLayerMeta.colorRamp);
+    return d3.scaleSequential(interp).domain(featureExtent);
+  }, [mapLayerId, featureExtent, activeLayerMeta]);
 
   const fillForTract = useMemo(() => {
-    if (mapView === 'canopy' && canopyByTract) {
-      return (tractId: string) => {
-        const v = canopyByTract[tractId];
-        if (v === undefined || Number.isNaN(v)) return '#cbd5e1';
-        return canopyColorScale(v);
-      };
+    if (mapLayerId === 'adi') {
+      return (tractId: string) => getTractColor(tractId, parameterValues, tractOverrides);
     }
-    return (tractId: string) => getTractColor(tractId, parameterValues, tractOverrides);
-  }, [mapView, canopyByTract, canopyColorScale, parameterValues, tractOverrides]);
+    if (!tractFeatures || !featureColorScale) {
+      return () => '#cbd5e1';
+    }
+    return (tractId: string) => {
+      const row = tractFeatures.get(tractId);
+      const v = row?.[mapLayerId];
+      if (typeof v !== 'number' || !Number.isFinite(v)) return '#cbd5e1';
+      return featureColorScale(v);
+    };
+  }, [mapLayerId, tractFeatures, featureColorScale, parameterValues, tractOverrides]);
 
   const currentArea = useMemo(() => 
     INITIAL_POLICY_AREAS.find(a => a.id === currentAreaId) || null
@@ -568,37 +607,40 @@ export default function App() {
             </div>
             
             {/* Map UI Overlays */}
-            <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-              {/* Layer toggle */}
-              <div className="absolute top-6 right-6 flex rounded-lg border border-outline-variant/30 bg-white/95 shadow-lg backdrop-blur-sm pointer-events-auto overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => setMapView('adi')}
-                  className={`px-3 py-2 text-[11px] font-bold uppercase tracking-wide transition-colors ${
-                    mapView === 'adi'
-                      ? 'bg-primary text-white'
-                      : 'text-secondary hover:bg-surface-container-high'
-                  }`}
-                >
-                  ADI
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMapView('canopy')}
-                  className={`flex items-center gap-1.5 px-3 py-2 text-[11px] font-bold uppercase tracking-wide transition-colors border-l border-outline-variant/20 ${
-                    mapView === 'canopy'
-                      ? 'bg-emerald-700 text-white'
-                      : 'text-secondary hover:bg-surface-container-high'
-                  }`}
-                >
-                  <TreePine className="w-3.5 h-3.5" />
-                  Tree canopy
-                </button>
+            <div className="absolute inset-0 pointer-events-none flex flex-col">
+              {/* Feature tabs — one per column in all_tract_features.csv + ADI */}
+              <div className="pointer-events-auto shrink-0 px-3 pt-3">
+                <div className="flex gap-1 overflow-x-auto pb-1 rounded-lg border border-outline-variant/20 bg-white/95 shadow-sm backdrop-blur-sm max-w-full">
+                  {MAP_LAYER_ORDER.map((layer) => (
+                    <button
+                      key={layer.id}
+                      type="button"
+                      onClick={() => setMapLayerId(layer.id)}
+                      className={`shrink-0 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wide whitespace-nowrap rounded-md transition-colors ${
+                        mapLayerId === layer.id
+                          ? layer.id === 'adi'
+                            ? 'bg-primary text-white'
+                            : 'bg-emerald-800 text-white'
+                          : 'text-secondary hover:bg-slate-100'
+                      }`}
+                    >
+                      {layer.id === 'Tree_Canopy' ? (
+                        <span className="inline-flex items-center gap-1">
+                          <TreePine className="w-3 h-3" />
+                          {layer.label}
+                        </span>
+                      ) : (
+                        layer.label
+                      )}
+                    </button>
+                  ))}
+                </div>
               </div>
 
+              <div className="flex-1 relative pointer-events-none">
               {/* Legend */}
-              <div className="absolute bottom-6 left-6 glass-panel p-4 rounded-lg shadow-xl border border-white/50 pointer-events-auto max-w-[220px]">
-                {mapView === 'adi' ? (
+              <div className="absolute bottom-6 left-6 glass-panel p-4 rounded-lg shadow-xl border border-white/50 pointer-events-auto max-w-[260px]">
+                {mapLayerId === 'adi' ? (
                   <>
                     <h4 className="text-[10px] font-bold text-secondary uppercase mb-3 tracking-widest">
                       ADI (Area Deprivation Index)
@@ -617,30 +659,39 @@ export default function App() {
                       ))}
                     </div>
                   </>
-                ) : (
+                ) : activeLayerMeta && featureExtent ? (
                   <>
-                    <h4 className="text-[10px] font-bold text-secondary uppercase mb-2 tracking-widest flex items-center gap-1.5">
-                      <TreePine className="w-3 h-3" />
-                      Tree canopy cover
+                    <h4 className="text-[10px] font-bold text-secondary uppercase mb-1 tracking-widest">
+                      {activeLayerMeta.label}
                     </h4>
                     <p className="text-[10px] text-secondary mb-3 leading-snug">
-                      Chicago Health Atlas CHAKUCW_2017 (% canopy by community area, applied to each tract).
+                      {activeLayerMeta.subtitle}
                     </p>
                     <div
                       className="h-3 w-full rounded mb-2 border border-outline-variant/20"
                       style={{
-                        background: `linear-gradient(to right, ${d3.interpolateYlGn(0)}, ${d3.interpolateYlGn(0.5)}, ${d3.interpolateYlGn(1)})`,
+                        background: (() => {
+                          const interp = interpolatorFromRamp(activeLayerMeta.colorRamp);
+                          const stops = [0, 0.25, 0.5, 0.75, 1].map((t) => interp(t)).join(', ');
+                          return `linear-gradient(to right, ${stops})`;
+                        })(),
                       }}
                     />
                     <div className="flex justify-between text-[10px] font-semibold text-on-surface tabular-nums">
-                      <span>{canopyExtent[0].toFixed(1)}%</span>
-                      <span>{canopyExtent[1].toFixed(1)}%</span>
+                      <span>
+                        {formatLayerValue(mapLayerId, featureExtent[0])}
+                      </span>
+                      <span>
+                        {formatLayerValue(mapLayerId, featureExtent[1])}
+                      </span>
                     </div>
                     <div className="flex items-center gap-2 mt-3">
                       <div className="w-3 h-3 rounded-sm bg-slate-300 border border-slate-400/50" />
                       <span className="text-[10px] text-secondary">No data</span>
                     </div>
                   </>
+                ) : (
+                  <p className="text-[10px] text-secondary">Load tract features CSV to see this layer.</p>
                 )}
               </div>
 
@@ -665,19 +716,20 @@ export default function App() {
                     </div>
                     <div className="flex justify-between items-baseline">
                       <span className="text-[10px] text-secondary">
-                        {mapView === 'canopy' ? 'Tree canopy' : 'Predicted ADI'}
+                        {activeLayerMeta?.label ?? mapLayerId}
                       </span>
                       <span className="text-sm font-bold text-on-surface">
-                        {mapView === 'canopy' && canopyByTract
-                          ? (() => {
-                              const tid = String(hoveredTract.CENSUS_T_1 || hoveredTract.CENSUS_TRA || '');
-                              const p = canopyByTract[tid];
-                              return p !== undefined ? `${p.toFixed(1)}%` : '—';
-                            })()
-                          : getTractOutcomeValue(hoveredTract.CENSUS_T_1 || hoveredTract.CENSUS_TRA || '0').toFixed(1)}
+                        {(() => {
+                          const tid = String(hoveredTract.CENSUS_T_1 || hoveredTract.CENSUS_TRA || '');
+                          if (mapLayerId === 'adi') {
+                            return getTractOutcomeValue(tid).toFixed(1);
+                          }
+                          const v = tractFeatures?.get(tid)?.[mapLayerId];
+                          return formatLayerValue(mapLayerId, typeof v === 'number' ? v : Number.NaN);
+                        })()}
                       </span>
                     </div>
-                    {mapView !== 'canopy' && (
+                    {mapLayerId === 'adi' && (
                       <div className="w-full bg-surface-container h-1 rounded-full mt-1 overflow-hidden">
                         <motion.div 
                           initial={{ width: "40%" }}
@@ -689,11 +741,12 @@ export default function App() {
                   </motion.div>
                 )}
               </AnimatePresence>
+              </div>
             </div>
 
             {/* Simulation Overlay */}
             <AnimatePresence>
-              {(isSimulating || isLoadingMap || isLoadingCanopy) && (
+              {(isSimulating || isLoadingMap || isLoadingFeatures) && (
                 <motion.div 
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
@@ -710,8 +763,8 @@ export default function App() {
                     <span className="font-bold text-primary">
                       {isLoadingMap
                         ? 'Initializing Geospatial Data...'
-                        : isLoadingCanopy
-                          ? 'Loading tree canopy layer...'
+                        : isLoadingFeatures
+                          ? 'Loading tract feature layers...'
                           : 'Recalculating Geospatial Data...'}
                     </span>
                   </div>

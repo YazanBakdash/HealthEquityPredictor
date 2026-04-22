@@ -8,3 +8,7 @@ coverage/
 __pycache__/
 *.py[cod]
 Businesses_Data/
+
+inputs_processed/Business_Licenses_20260415_with_tracts.csv
+inputs_raw/bike_routes.geojson
+inputs_raw/tree_canopy.geojson

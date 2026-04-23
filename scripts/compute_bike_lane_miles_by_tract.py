@@ -52,6 +52,14 @@ def _parse_args() -> argparse.Namespace:
         help="Path to bike routes GeoJSON.",
     )
     p.add_argument(
+        "--displayrou",
+        default="Protected Bike Lane",
+        help=(
+            "Only include route segments whose displayrou attribute equals this value "
+            "(exact string). Default: Protected Bike Lane. Use empty string to include all types."
+        ),
+    )
+    p.add_argument(
         "--out",
         default=str(Path("inputs_processed") / "tract_bike_lane_miles.csv"),
         help="Output CSV path.",
@@ -78,6 +86,7 @@ def compute_bike_lane_miles_by_tract(
     routes_path: str,
     tract_id_field: str,
     tract_fallback_crs: str,
+    displayrou_filter: str | None = "Protected Bike Lane",
 ) -> pd.DataFrame:
     tracts = _read_tracts(tracts_path, tract_fallback_crs)
     if tract_id_field not in tracts.columns:
@@ -89,6 +98,19 @@ def compute_bike_lane_miles_by_tract(
     routes = gpd.read_file(routes_path)
     if routes.crs is None:
         routes = routes.set_crs("EPSG:4326")
+
+    if displayrou_filter:
+        if "displayrou" not in routes.columns:
+            raise ValueError(
+                "Bike routes layer has no 'displayrou' column; cannot filter by route type."
+            )
+        mask = routes["displayrou"].astype(str).str.strip() == displayrou_filter.strip()
+        routes = routes.loc[mask].copy()
+        if len(routes) == 0:
+            raise ValueError(
+                f"No bike routes left after displayrou == {displayrou_filter!r}. "
+                "Check spelling against the GeoJSON."
+            )
 
     routes = routes.to_crs(tracts.crs)
 
@@ -121,15 +143,23 @@ def main() -> None:
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    filt = args.displayrou.strip() if args.displayrou else None
+
     df = compute_bike_lane_miles_by_tract(
         tracts_path=args.tracts,
         routes_path=args.routes,
         tract_id_field=args.tract_id_field,
         tract_fallback_crs=args.tract_crs,
+        displayrou_filter=filt,
     )
 
     df.to_csv(out_path, index=False)
-    print(f"Wrote {len(df):,} rows to {out_path}")
+    total_mi = float(df["bike_lane_miles"].sum())
+    print(
+        f"Wrote {len(df):,} rows to {out_path} "
+        f"(citywide bike_lane_miles sum ~ {total_mi:.2f}; "
+        f"displayrou filter: {filt!r})"
+    )
 
 
 if __name__ == "__main__":

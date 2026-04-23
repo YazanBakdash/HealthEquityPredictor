@@ -66,7 +66,14 @@ export const MAP_LAYER_ORDER: LayerMeta[] = [
     unit: '',
     decimals: 0,
   },
-  { id: 'Bike_Miles', label: 'Bike miles', subtitle: 'Protected bike lane miles', colorRamp: 'oranges', unit: ' mi', decimals: 2 },
+  {
+    id: 'Bike_Miles',
+    label: 'Bike miles',
+    subtitle: 'Protected bike lanes only (displayrou in source GeoJSON)',
+    colorRamp: 'oranges',
+    unit: ' mi',
+    decimals: 2,
+  },
   {
     id: 'Wifi_Hotspots',
     label: 'Wi‑Fi hotspots',

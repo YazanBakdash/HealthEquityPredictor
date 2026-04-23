@@ -121,17 +121,31 @@ def main() -> None:
     library_counts = _count_by_tract(lib_path, "CENSUS_TRACT")
     out["Library_Count"] = out["census_tract"].map(library_counts).fillna(0).astype(float)
 
-    # Economic Development
+    # Economic Development — active licenses only, one row per (account, site)
+    biz_path = PROCESSED / "Business_Licenses_20260415_with_tracts.csv"
     biz = pd.read_csv(
-        PROCESSED / "Business_Licenses_20260415_with_tracts.csv",
-        usecols=["CENSUS_TRACT", "LICENSE STATUS", "LICENSE DESCRIPTION"],
+        biz_path,
+        usecols=[
+            "CENSUS_TRACT",
+            "LICENSE STATUS",
+            "LICENSE DESCRIPTION",
+            "ACCOUNT NUMBER",
+            "SITE NUMBER",
+        ],
         low_memory=False,
     )
     biz = biz.copy()
     biz["CENSUS_TRACT"] = _normalize_tract_series(biz["CENSUS_TRACT"])
     biz = biz[biz["CENSUS_TRACT"].notna()]
 
-    active = biz[biz["LICENSE STATUS"].astype(str).str.upper().eq("AAI")]
+    active = biz[biz["LICENSE STATUS"].astype(str).str.upper().eq("AAI")].copy()
+    acct = active["ACCOUNT NUMBER"].astype("string").str.strip()
+    site = active["SITE NUMBER"].astype("string").str.strip()
+    active["_dedupe_key"] = acct.fillna("") + "|" + site.fillna("")
+    # Drop rows with no account/site id (cannot dedupe reliably); usually rare.
+    active = active[active["_dedupe_key"].str.len() > 1]
+    active = active.drop_duplicates(subset=["_dedupe_key"], keep="last")
+
     small_business = active["CENSUS_TRACT"].value_counts()
     out["Small_Business"] = out["census_tract"].map(small_business).fillna(0).astype(float)
 
@@ -143,6 +157,11 @@ def main() -> None:
     )
     grocery_counts = active.loc[grocery_mask, "CENSUS_TRACT"].value_counts()
     out["Grocery_Store"] = out["census_tract"].map(grocery_counts).fillna(0).astype(float)
+
+    print(
+        f"Business licenses: {len(biz):,} rows -> {len(active):,} active unique (account|site); "
+        f"citywide Small_Business sum {float(out['Small_Business'].sum()):,.0f}"
+    )
 
     try:
         out.to_csv(OUT_PATH, index=False)

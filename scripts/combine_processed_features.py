@@ -24,6 +24,7 @@ PUBLIC_ALL_FEATURES_CSV = ROOT / "public" / "all_tract_features.csv"
 FEET_PER_MILE = 5280.0
 LIBRARY_BUFFER_FEET = FEET_PER_MILE  # 1.0 mile
 SCHOOL_BUFFER_FEET = 0.5 * FEET_PER_MILE  # 0.5 mile
+WIFI_BUFFER_FEET = 0.5 * FEET_PER_MILE  # 0.5 mile
 EXCLUDED_TRACTS = {
     "17031840000",
     "17031760900",
@@ -184,9 +185,12 @@ def main() -> None:
     bike_map = bike.set_index("census_tract")["bike_lane_miles"]
     out["Bike_Miles"] = out["census_tract"].map(bike_map).fillna(0.0)
 
-    wifi_counts = _count_by_tract(
+    wifi_counts = _count_points_within_tract_buffer(
+        tracts,
         PROCESSED / "Connect_Chicago_Locations_-_Historical_20260416_with_tracts.csv",
-        "CENSUS_TRACT",
+        lat_col="Latitude",
+        lon_col="Longitude",
+        buffer_feet=WIFI_BUFFER_FEET,
     )
     out["Wifi_Hotspots"] = out["census_tract"].map(wifi_counts).fillna(0).astype(float)
 

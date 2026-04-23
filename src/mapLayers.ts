@@ -78,7 +78,7 @@ export const MAP_LAYER_ORDER: LayerMeta[] = [
   {
     id: 'Wifi_Hotspots',
     label: 'Wi‑Fi hotspots',
-    subtitle: 'Connect Chicago locations (count)',
+    subtitle: 'Connect Chicago locations in tract + within 0.5 mi of tract boundary',
     colorRamp: 'teal',
     unit: '',
     decimals: 0,

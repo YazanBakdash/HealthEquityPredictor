@@ -61,7 +61,7 @@ export const MAP_LAYER_ORDER: LayerMeta[] = [
   {
     id: 'Transit_Stop',
     label: 'Transit stops',
-    subtitle: 'CTA bus + Metra (count)',
+    subtitle: 'CTA bus + Metra in Chicago only (count)',
     colorRamp: 'purples',
     unit: '',
     decimals: 0,
@@ -69,7 +69,8 @@ export const MAP_LAYER_ORDER: LayerMeta[] = [
   {
     id: 'Bike_Miles',
     label: 'Bike miles',
-    subtitle: 'Protected bike lanes only (displayrou in source GeoJSON)',
+    subtitle:
+      'Bike miles in tract + 0.25 mi buffer (Protected/Buffered/Greenway + off-street trails)',
     colorRamp: 'oranges',
     unit: ' mi',
     decimals: 2,
@@ -82,11 +83,18 @@ export const MAP_LAYER_ORDER: LayerMeta[] = [
     unit: '',
     decimals: 0,
   },
-  { id: 'School_Density', label: 'Schools', subtitle: 'Public K–12 profiles (count)', colorRamp: 'blues', unit: '', decimals: 0 },
+  {
+    id: 'School_Density',
+    label: 'Schools',
+    subtitle: 'Public K-12 profiles in tract + within 0.5 mi of tract boundary',
+    colorRamp: 'blues',
+    unit: '',
+    decimals: 0,
+  },
   {
     id: 'Library_Count',
     label: 'Libraries',
-    subtitle: 'Public library branches (count by tract)',
+    subtitle: 'Public library branches in tract + within 1 mi of tract boundary',
     colorRamp: 'blues',
     unit: '',
     decimals: 0,

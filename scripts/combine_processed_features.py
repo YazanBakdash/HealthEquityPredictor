@@ -22,6 +22,8 @@ OUT_PATH = PROCESSED / "all_tract_features.csv"
 PUBLIC_TREE_CANOPY_CSV = ROOT / "public" / "tract_tree_canopy.csv"
 PUBLIC_ALL_FEATURES_CSV = ROOT / "public" / "all_tract_features.csv"
 FEET_PER_MILE = 5280.0
+LIBRARY_BUFFER_FEET = FEET_PER_MILE  # 1.0 mile
+SCHOOL_BUFFER_FEET = 0.5 * FEET_PER_MILE  # 0.5 mile
 EXCLUDED_TRACTS = {
     "17031840000",
     "17031760900",
@@ -41,6 +43,19 @@ def _normalize_tract_series(series: pd.Series) -> pd.Series:
 
 def _count_by_tract(path: Path, tract_col: str) -> pd.Series:
     df = pd.read_csv(path, usecols=[tract_col], low_memory=False)
+    tracts = _normalize_tract_series(df[tract_col])
+    return tracts.value_counts()
+
+
+def _count_by_tract_with_city_filter(
+    path: Path,
+    tract_col: str,
+    city_col: str,
+    city_name: str = "CHICAGO",
+) -> pd.Series:
+    df = pd.read_csv(path, usecols=[tract_col, city_col], low_memory=False).copy()
+    city_mask = df[city_col].astype(str).str.strip().str.upper().eq(city_name.upper())
+    df = df.loc[city_mask]
     tracts = _normalize_tract_series(df[tract_col])
     return tracts.value_counts()
 
@@ -67,38 +82,12 @@ def _read_tracts(path: Path, fallback_crs: str = "EPSG:3435") -> gpd.GeoDataFram
     return tracts
 
 
-def _libraries_within_1mi_of_tract_centers(tracts_gdf: gpd.GeoDataFrame, lib_path: Path) -> pd.Series:
-    libs = pd.read_csv(lib_path, usecols=["Latitude", "Longitude"], low_memory=False).copy()
-    libs["Latitude"] = pd.to_numeric(libs["Latitude"], errors="coerce")
-    libs["Longitude"] = pd.to_numeric(libs["Longitude"], errors="coerce")
-    libs = libs.dropna(subset=["Latitude", "Longitude"])
-    if libs.empty:
-        return pd.Series(dtype=float)
-
-    lib_points = gpd.GeoDataFrame(
-        libs,
-        geometry=gpd.points_from_xy(libs["Longitude"], libs["Latitude"]),
-        crs="EPSG:4326",
-    ).to_crs(tracts_gdf.crs)
-
-    centers = tracts_gdf[["census_tract", "geometry"]].copy()
-    centers["geometry"] = centers.geometry.centroid.buffer(FEET_PER_MILE)
-
-    joined = gpd.sjoin(
-        centers,
-        lib_points[["geometry"]],
-        how="left",
-        predicate="intersects",
-    )
-    counts = joined.groupby("census_tract")["index_right"].count()
-    return counts.astype(float)
-
-
-def _points_within_1mi_of_tract_centers(
+def _count_points_within_tract_buffer(
     tracts_gdf: gpd.GeoDataFrame,
     src_path: Path,
     lat_col: str,
     lon_col: str,
+    buffer_feet: float,
 ) -> pd.Series:
     pts = pd.read_csv(src_path, usecols=[lat_col, lon_col], low_memory=False).copy()
     pts[lat_col] = pd.to_numeric(pts[lat_col], errors="coerce")
@@ -113,11 +102,11 @@ def _points_within_1mi_of_tract_centers(
         crs="EPSG:4326",
     ).to_crs(tracts_gdf.crs)
 
-    centers = tracts_gdf[["census_tract", "geometry"]].copy()
-    centers["geometry"] = centers.geometry.centroid.buffer(FEET_PER_MILE)
+    buffered = tracts_gdf[["census_tract", "geometry"]].copy()
+    buffered["geometry"] = buffered.geometry.buffer(buffer_feet)
 
     joined = gpd.sjoin(
-        centers,
+        buffered,
         points_gdf[["geometry"]],
         how="left",
         predicate="intersects",
@@ -173,8 +162,18 @@ def main() -> None:
     out["Parks"] = out["census_tract"].map(parks).fillna(0.0)
 
     # Mobility & Infrastructure
-    cta_counts = _count_by_tract(PROCESSED / "CTA_BusStops_with_tracts.csv", "CENSUS_TRACT")
-    metra_counts = _count_by_tract(PROCESSED / "Metra_Stations_with_tracts.csv", "CENSUS_TRACT")
+    cta_counts = _count_by_tract_with_city_filter(
+        PROCESSED / "CTA_BusStops_with_tracts.csv",
+        tract_col="CENSUS_TRACT",
+        city_col="CITY",
+        city_name="CHICAGO",
+    )
+    metra_counts = _count_by_tract_with_city_filter(
+        PROCESSED / "Metra_Stations_with_tracts.csv",
+        tract_col="CENSUS_TRACT",
+        city_col="MUNICIPALI",
+        city_name="CHICAGO",
+    )
     out["Transit_Stop"] = (
         out["census_tract"].map(cta_counts).fillna(0).astype(float)
         + out["census_tract"].map(metra_counts).fillna(0).astype(float)
@@ -192,11 +191,12 @@ def main() -> None:
     out["Wifi_Hotspots"] = out["census_tract"].map(wifi_counts).fillna(0).astype(float)
 
     # Education
-    school_counts = _points_within_1mi_of_tract_centers(
+    school_counts = _count_points_within_tract_buffer(
         tracts,
         PROCESSED / "Chicago_Public_Schools_-_School_Profile_Information_SY2425_with_tracts.csv",
         lat_col="Latitude",
         lon_col="Longitude",
+        buffer_feet=SCHOOL_BUFFER_FEET,
     )
     out["School_Density"] = out["census_tract"].map(school_counts).fillna(0).astype(float)
 
@@ -204,7 +204,13 @@ def main() -> None:
         PROCESSED
         / "Libraries_-_Locations,__Contact_Information,_and_Usual_Hours_of_Operation_20260415_with_tracts.csv"
     )
-    library_counts = _libraries_within_1mi_of_tract_centers(tracts, lib_path)
+    library_counts = _count_points_within_tract_buffer(
+        tracts,
+        lib_path,
+        lat_col="Latitude",
+        lon_col="Longitude",
+        buffer_feet=LIBRARY_BUFFER_FEET,
+    )
     out["Library_Count"] = out["census_tract"].map(library_counts).fillna(0).astype(float)
 
     # Economic Development — active licenses only, one row per (account, site)

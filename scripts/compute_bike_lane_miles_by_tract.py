@@ -16,6 +16,14 @@ except Exception as e:  # pragma: no cover
 
 
 FEET_PER_MILE = 5280.0
+BIKE_BUFFER_FEET = 1320.0  # 0.25 miles
+DEFAULT_DISPLAYROU_CATEGORIES = [
+    "Protected Bike Lane",
+    "Buffered Bike Lane",
+    "Neighborhood Greenway",
+    "Shared Use Path",
+]
+DEFAULT_OFFSTREET_PATH = str(Path("inputs_raw") / "Off-Street_Bike_Trails.geojson")
 EXCLUDED_TRACTS = {
     "17031840000",
     "17031760900",
@@ -30,8 +38,8 @@ EXCLUDED_TRACTS = {
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "Compute bike-lane miles within each census tract by intersecting a bike routes "
-            "GeoJSON with census tract boundaries."
+            "Compute bike-lane miles within each tract plus a 0.25-mile buffer by "
+            "intersecting bike routes with tract-buffer polygons."
         )
     )
     p.add_argument(
@@ -61,11 +69,20 @@ def _parse_args() -> argparse.Namespace:
         help="Path to bike routes GeoJSON.",
     )
     p.add_argument(
-        "--displayrou",
-        default="Protected Bike Lane",
+        "--displayrou-categories",
+        default=",".join(DEFAULT_DISPLAYROU_CATEGORIES),
         help=(
-            "Only include route segments whose displayrou attribute equals this value "
-            "(exact string). Default: Protected Bike Lane. Use empty string to include all types."
+            "Comma-separated list of displayrou categories to include. "
+            "Default: Protected Bike Lane, Buffered Bike Lane, Neighborhood Greenway, Shared Use Path. "
+            "Use empty string to include all categories."
+        ),
+    )
+    p.add_argument(
+        "--offstreet",
+        default=DEFAULT_OFFSTREET_PATH,
+        help=(
+            "Optional off-street trail GeoJSON path to include in bike miles. "
+            "Use empty string to disable."
         ),
     )
     p.add_argument(
@@ -95,7 +112,8 @@ def compute_bike_lane_miles_by_tract(
     routes_path: str,
     tract_id_field: str,
     tract_fallback_crs: str,
-    displayrou_filter: str | None = "Protected Bike Lane",
+    displayrou_categories: list[str] | None = None,
+    offstreet_path: str | None = DEFAULT_OFFSTREET_PATH,
 ) -> pd.DataFrame:
     tracts = _read_tracts(tracts_path, tract_fallback_crs)
     if tract_id_field not in tracts.columns:
@@ -108,27 +126,65 @@ def compute_bike_lane_miles_by_tract(
     if routes.crs is None:
         routes = routes.set_crs("EPSG:4326")
 
-    if displayrou_filter:
+    if displayrou_categories:
         if "displayrou" not in routes.columns:
             raise ValueError(
                 "Bike routes layer has no 'displayrou' column; cannot filter by route type."
             )
-        mask = routes["displayrou"].astype(str).str.strip() == displayrou_filter.strip()
+        route_type = routes["displayrou"].astype(str).str.strip()
+        wanted = {c.strip() for c in displayrou_categories if c.strip()}
+        available = set(route_type.dropna().unique().tolist())
+        missing = sorted(wanted - available)
+        if missing:
+            print(
+                "Warning: requested displayrou categories not found in source: "
+                + ", ".join(missing)
+            )
+        mask = route_type.isin(wanted)
         routes = routes.loc[mask].copy()
         if len(routes) == 0:
             raise ValueError(
-                f"No bike routes left after displayrou == {displayrou_filter!r}. "
-                "Check spelling against the GeoJSON."
+                "No bike routes left after applying displayrou category filter. "
+                "Check requested categories against the GeoJSON."
             )
 
     routes = routes.to_crs(tracts.crs)
+    onstreet = routes[["geometry"]].copy()
+
+    if offstreet_path:
+        off_path = Path(offstreet_path)
+        if off_path.is_file():
+            off = gpd.read_file(off_path)
+            if off.crs is None:
+                off = off.set_crs("EPSG:4326")
+            # Keep Chicago, currently existing facilities only.
+            if "Muni" in off.columns:
+                muni = off["Muni"].astype(str).str.strip().str.upper()
+                off = off.loc[muni.eq("CHICAGO")].copy()
+            if "Status" in off.columns:
+                status = off["Status"].astype(str).str.strip().str.upper()
+                off = off.loc[status.eq("EXISTING")].copy()
+            off = off.to_crs(tracts.crs)
+            off = off[["geometry"]].copy()
+            routes = gpd.GeoDataFrame(
+                pd.concat([onstreet, off], ignore_index=True),
+                geometry="geometry",
+                crs=tracts.crs,
+            )
+        else:
+            print(f"Warning: off-street file not found: {off_path}")
+            routes = onstreet
+    else:
+        routes = onstreet
 
     tracts = tracts[[tract_id_field, "geometry"]].copy()
     tracts[tract_id_field] = tracts[tract_id_field].astype(str)
     tracts = tracts.loc[~tracts[tract_id_field].isin(EXCLUDED_TRACTS)].copy()
-    routes = routes[["geometry"]].copy()
 
-    intersected = gpd.overlay(routes, tracts, how="intersection", keep_geom_type=False)
+    tract_buffers = tracts.copy()
+    tract_buffers["geometry"] = tract_buffers.geometry.buffer(BIKE_BUFFER_FEET)
+
+    intersected = gpd.overlay(routes, tract_buffers, how="intersection", keep_geom_type=False)
     if len(intersected) == 0:
         miles = pd.DataFrame({tract_id_field: tracts[tract_id_field].values, "bike_lane_miles": 0.0})
         miles = miles.rename(columns={tract_id_field: "census_tract"})
@@ -153,14 +209,17 @@ def main() -> None:
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    filt = args.displayrou.strip() if args.displayrou else None
+    categories = [c.strip() for c in args.displayrou_categories.split(",")] if args.displayrou_categories else []
+    categories = [c for c in categories if c]
+    filt = categories if categories else None
 
     df = compute_bike_lane_miles_by_tract(
         tracts_path=args.tracts,
         routes_path=args.routes,
         tract_id_field=args.tract_id_field,
         tract_fallback_crs=args.tract_crs,
-        displayrou_filter=filt,
+        displayrou_categories=filt,
+        offstreet_path=args.offstreet.strip() if args.offstreet else None,
     )
 
     df.to_csv(out_path, index=False)
@@ -168,7 +227,7 @@ def main() -> None:
     print(
         f"Wrote {len(df):,} rows to {out_path} "
         f"(citywide bike_lane_miles sum ~ {total_mi:.2f}; "
-        f"displayrou filter: {filt!r})"
+        f"displayrou categories: {filt if filt is not None else 'ALL'})"
     )
 
 

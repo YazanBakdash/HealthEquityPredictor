@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+from shapely import wkt
 
 try:
     import geopandas as gpd
@@ -22,9 +23,12 @@ OUT_PATH = PROCESSED / "all_tract_features.csv"
 PUBLIC_TREE_CANOPY_CSV = ROOT / "public" / "tract_tree_canopy.csv"
 PUBLIC_ALL_FEATURES_CSV = ROOT / "public" / "all_tract_features.csv"
 FEET_PER_MILE = 5280.0
+AFFORDABLE_BUFFER_FEET = 0.5 * FEET_PER_MILE  # 0.5 mile
+PARK_BUFFER_FEET = 0.25 * FEET_PER_MILE  # 0.25 mile
 LIBRARY_BUFFER_FEET = FEET_PER_MILE  # 1.0 mile
 SCHOOL_BUFFER_FEET = 0.5 * FEET_PER_MILE  # 0.5 mile
 WIFI_BUFFER_FEET = 0.5 * FEET_PER_MILE  # 0.5 mile
+SQFT_PER_ACRE = 43560.0
 EXCLUDED_TRACTS = {
     "17031840000",
     "17031760900",
@@ -116,6 +120,68 @@ def _count_points_within_tract_buffer(
     return counts.astype(float)
 
 
+def _sum_points_value_within_tract_buffer(
+    tracts_gdf: gpd.GeoDataFrame,
+    src_path: Path,
+    lat_col: str,
+    lon_col: str,
+    value_col: str,
+    buffer_feet: float,
+) -> pd.Series:
+    pts = pd.read_csv(src_path, usecols=[lat_col, lon_col, value_col], low_memory=False).copy()
+    pts[lat_col] = pd.to_numeric(pts[lat_col], errors="coerce")
+    pts[lon_col] = pd.to_numeric(pts[lon_col], errors="coerce")
+    pts[value_col] = pd.to_numeric(pts[value_col], errors="coerce").fillna(0.0)
+    pts = pts.dropna(subset=[lat_col, lon_col])
+    if pts.empty:
+        return pd.Series(dtype=float)
+
+    points_gdf = gpd.GeoDataFrame(
+        pts,
+        geometry=gpd.points_from_xy(pts[lon_col], pts[lat_col]),
+        crs="EPSG:4326",
+    ).to_crs(tracts_gdf.crs)
+
+    buffered = tracts_gdf[["census_tract", "geometry"]].copy()
+    buffered["geometry"] = buffered.geometry.buffer(buffer_feet)
+
+    joined = gpd.sjoin(
+        buffered,
+        points_gdf[[value_col, "geometry"]],
+        how="left",
+        predicate="intersects",
+    )
+    sums = joined.groupby("census_tract")[value_col].sum(min_count=1).fillna(0.0)
+    return sums.astype(float)
+
+
+def _sum_park_overlap_acres_within_tract_buffer(
+    tracts_gdf: gpd.GeoDataFrame,
+    parks_path: Path,
+    park_geom_col: str = "the_geom",
+    buffer_feet: float = PARK_BUFFER_FEET,
+) -> pd.Series:
+    parks_df = pd.read_csv(parks_path, usecols=[park_geom_col], low_memory=False)
+    parks_df = parks_df.dropna(subset=[park_geom_col]).copy()
+    if parks_df.empty:
+        return pd.Series(dtype=float)
+
+    parks_df["geometry"] = parks_df[park_geom_col].map(wkt.loads)
+    parks_gdf = gpd.GeoDataFrame(parks_df[["geometry"]], geometry="geometry", crs="EPSG:4326")
+    parks_gdf = parks_gdf.to_crs(tracts_gdf.crs)
+
+    buffered = tracts_gdf[["census_tract", "geometry"]].copy()
+    buffered["geometry"] = buffered.geometry.buffer(buffer_feet)
+
+    intersected = gpd.overlay(parks_gdf, buffered, how="intersection", keep_geom_type=False)
+    if intersected.empty:
+        return pd.Series(dtype=float)
+
+    intersected["overlap_acres"] = intersected.geometry.area / SQFT_PER_ACRE
+    sums = intersected.groupby("census_tract")["overlap_acres"].sum()
+    return sums.astype(float)
+
+
 def main() -> None:
     if not HEALTH_ATLAS_CANOPY_CSV.is_file():
         raise SystemExit(
@@ -139,10 +205,13 @@ def main() -> None:
     out["Tree_Canopy"] = out["census_tract"].map(canopy_map)
 
     # Housing & Urban Environment
-    affordable = _sum_by_tract(
+    affordable = _sum_points_value_within_tract_buffer(
+        tracts,
         PROCESSED / "Affordable_Rental_Housing_Developments_20260415_with_tracts.csv",
-        "CENSUS_TRACT",
-        "Units",
+        lat_col="Latitude",
+        lon_col="Longitude",
+        value_col="Units",
+        buffer_feet=AFFORDABLE_BUFFER_FEET,
     )
     out["Affordable_Housing"] = out["census_tract"].map(affordable).fillna(0.0)
 
@@ -159,7 +228,12 @@ def main() -> None:
     except OSError as e:
         print(f"Note: could not copy tree canopy CSV to {PUBLIC_TREE_CANOPY_CSV}: {e}")
 
-    parks = _sum_by_tract(PROCESSED / "CPD_Parks_with_tracts.csv", "census_tract", "ACRES")
+    parks = _sum_park_overlap_acres_within_tract_buffer(
+        tracts,
+        PROCESSED / "CPD_Parks_with_tracts.csv",
+        park_geom_col="the_geom",
+        buffer_feet=PARK_BUFFER_FEET,
+    )
     out["Parks"] = out["census_tract"].map(parks).fillna(0.0)
 
     # Mobility & Infrastructure

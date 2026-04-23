@@ -44,7 +44,7 @@ export const MAP_LAYER_ORDER: LayerMeta[] = [
   {
     id: 'Affordable_Housing',
     label: 'Affordable housing',
-    subtitle: 'Subsidized / income-restricted units (sum)',
+    subtitle: 'Subsidized / income-restricted units in tract + within 0.5 mi of tract boundary',
     colorRamp: 'blues',
     unit: ' units',
     decimals: 0,
@@ -57,7 +57,14 @@ export const MAP_LAYER_ORDER: LayerMeta[] = [
     unit: ' %',
     decimals: 1,
   },
-  { id: 'Parks', label: 'Parks', subtitle: 'Park acres (sum)', colorRamp: 'greens', unit: ' ac', decimals: 2 },
+  {
+    id: 'Parks',
+    label: 'Parks',
+    subtitle: 'Park acreage overlap in tract + within 0.25 mi of tract boundary',
+    colorRamp: 'greens',
+    unit: ' ac',
+    decimals: 2,
+  },
   {
     id: 'Transit_Stop',
     label: 'Transit stops',

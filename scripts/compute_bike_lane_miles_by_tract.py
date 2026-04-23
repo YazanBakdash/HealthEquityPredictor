@@ -16,6 +16,15 @@ except Exception as e:  # pragma: no cover
 
 
 FEET_PER_MILE = 5280.0
+EXCLUDED_TRACTS = {
+    "17031840000",
+    "17031760900",
+    "17031770600",
+    "17031770700",
+    "17031000000",
+    "17031770800",
+    "17031811600",
+}
 
 
 def _parse_args() -> argparse.Namespace:
@@ -116,6 +125,7 @@ def compute_bike_lane_miles_by_tract(
 
     tracts = tracts[[tract_id_field, "geometry"]].copy()
     tracts[tract_id_field] = tracts[tract_id_field].astype(str)
+    tracts = tracts.loc[~tracts[tract_id_field].isin(EXCLUDED_TRACTS)].copy()
     routes = routes[["geometry"]].copy()
 
     intersected = gpd.overlay(routes, tracts, how="intersection", keep_geom_type=False)

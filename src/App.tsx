@@ -25,6 +25,29 @@ import {
 } from './mapLayers';
 
 const CHICAGO_GEOJSON_URL = '/census_tracts.json';
+const EXCLUDED_TRACTS = new Set([
+  '17031840000',
+  '17031760900',
+  '17031770600',
+  '17031770700',
+  '17031000000',
+  '17031770800',
+  '17031811600',
+]);
+
+function normalizeTractId(value: unknown): string {
+  return String(value ?? '').trim().replace(/\.0+$/, '');
+}
+
+function tractIdFromProps(props: any): string {
+  return normalizeTractId(
+    props?.CENSUS_T_1 ??
+      props?.CENSUS_TRA ??
+      props?.CENSUS_TRACT ??
+      props?.TRACT_FIPS ??
+      ''
+  );
+}
 
 function interpolatorFromRamp(ramp: LayerMeta['colorRamp']) {
   switch (ramp) {
@@ -167,13 +190,10 @@ const D3Map = ({
         <g transform="translate(20, 20)">
           {data.features.map((feature: any, i: number) => {
             const props = feature.properties;
-            // Use CENSUS_T_1 or CENSUS_TRA from the new GeoJSON
-            const tractId = String(props.CENSUS_T_1 || props.CENSUS_TRA || i);
+            const tractId = tractIdFromProps(props) || String(i);
+            if (EXCLUDED_TRACTS.has(tractId)) return null;
             const color = fillForTract(tractId);
-            const isHovered = hoveredTract && (
-              (hoveredTract.CENSUS_T_1 && hoveredTract.CENSUS_T_1 === props.CENSUS_T_1) || 
-              (hoveredTract.CENSUS_TRA && hoveredTract.CENSUS_TRA === props.CENSUS_TRA)
-            );
+            const isHovered = hoveredTract && tractIdFromProps(hoveredTract) === tractId;
             const isSelected = selectedTractId === tractId;
 
             const d = pathGenerator(feature);
@@ -234,7 +254,17 @@ export default function App() {
         return res.json();
       })
       .then(data => {
-        setGeoData(data);
+        const filtered = {
+          ...data,
+          features: Array.isArray(data?.features)
+            ? data.features.filter((feature: any) => {
+                const props = feature?.properties ?? {};
+                const tractId = tractIdFromProps(props);
+                return !EXCLUDED_TRACTS.has(tractId);
+              })
+            : [],
+        };
+        setGeoData(filtered);
         setIsLoadingMap(false);
       })
       .catch(err => {
@@ -711,7 +741,7 @@ export default function App() {
                     className="glass-panel px-4 py-3 rounded-lg shadow-2xl border border-white/40 flex flex-col gap-1 min-w-[180px] pointer-events-none z-[100]"
                   >
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-primary">Tract {hoveredTract.CENSUS_TRA || hoveredTract.CENSUS_T_1}</span>
+                      <span className="text-xs font-bold text-primary">Tract {tractIdFromProps(hoveredTract)}</span>
                       <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
                     </div>
                     <div className="flex justify-between items-baseline">
@@ -720,7 +750,7 @@ export default function App() {
                       </span>
                       <span className="text-sm font-bold text-on-surface">
                         {(() => {
-                          const tid = String(hoveredTract.CENSUS_T_1 || hoveredTract.CENSUS_TRA || '');
+                          const tid = tractIdFromProps(hoveredTract);
                           if (mapLayerId === 'adi') {
                             return getTractOutcomeValue(tid).toFixed(1);
                           }

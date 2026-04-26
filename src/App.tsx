@@ -26,13 +26,10 @@ import {
 
 const CHICAGO_GEOJSON_URL = '/census_tracts.json';
 const EXCLUDED_TRACTS = new Set([
-  '17031840000',
   '17031760900',
   '17031770600',
   '17031770700',
   '17031000000',
-  '17031770800',
-  '17031811600',
 ]);
 
 function normalizeTractId(value: unknown): string {
@@ -106,37 +103,56 @@ const getTractColor = (tractId: string, globalParams: Record<string, number>, ov
   return '#4EDEA3';
 };
 
+function lonLatToTile(lon: number, lat: number, zoom: number): [number, number] {
+  const x = Math.floor(((lon + 180) / 360) * Math.pow(2, zoom));
+  const latRad = (lat * Math.PI) / 180;
+  const y = Math.floor(
+    ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) *
+      Math.pow(2, zoom),
+  );
+  return [x, y];
+}
+
+function tileToLonLat(x: number, y: number, zoom: number): [number, number] {
+  const n = Math.pow(2, zoom);
+  const lon = (x / n) * 360 - 180;
+  const latRad = Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / n)));
+  return [lon, (latRad * 180) / Math.PI];
+}
+
+const TILE_URL =
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+
 // D3 Map Component moved outside App to prevent zoom reset on re-render
-const D3Map = ({ 
-  data, 
-  width, 
-  height, 
-  hoveredTract, 
-  setHoveredTract, 
+const D3Map = ({
+  data,
+  width,
+  height,
+  hoveredTract,
+  setHoveredTract,
   selectedTractId,
   setSelectedTractId,
   setMousePos,
   fillForTract,
-}: { 
-  data: any, 
-  width: number, 
-  height: number,
-  hoveredTract: any,
-  setHoveredTract: (t: any) => void,
-  selectedTractId: string | null,
-  setSelectedTractId: (id: string | null) => void,
-  setMousePos: (p: { x: number, y: number }) => void,
-  fillForTract: (tractId: string) => string,
+  showSatellite,
+}: {
+  data: any;
+  width: number;
+  height: number;
+  hoveredTract: any;
+  setHoveredTract: (t: any) => void;
+  selectedTractId: string | null;
+  setSelectedTractId: (id: string | null) => void;
+  setMousePos: (p: { x: number; y: number }) => void;
+  fillForTract: (tractId: string) => string;
+  showSatellite: boolean;
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const [transform, setTransform] = useState(d3.zoomIdentity);
 
   const projection = useMemo(() => {
-    // The GeoJSON uses projected coordinates (State Plane Illinois East)
-    // We use geoIdentity with reflectY to fit it into our SVG
     try {
-      return d3.geoIdentity()
-        .reflectY(true)
+      return d3.geoMercator()
         .fitSize([width - 40, height - 40], data);
     } catch (e) {
       console.error('Projection error:', e);
@@ -147,6 +163,38 @@ const D3Map = ({
   const pathGenerator = useMemo(() => {
     return d3.geoPath().projection(projection);
   }, [projection]);
+
+  const tiles = useMemo(() => {
+    if (!showSatellite) return [];
+    const bbox = d3.geoBounds(data);
+    const sw = bbox[0];
+    const ne = bbox[1];
+    const zoom = Math.min(
+      Math.max(Math.round(Math.log2((360 * width) / ((ne[0] - sw[0]) * 256))), 10),
+      15,
+    );
+    const [xMin, yNE] = lonLatToTile(sw[0] - 0.4, ne[1] + 0.08, zoom);
+    const [xMax, ySW] = lonLatToTile(ne[0] + 0.4, sw[1] - 0.08, zoom);
+    const result: {
+      x: number; y: number; z: number;
+      svgX: number; svgY: number; svgW: number; svgH: number;
+    }[] = [];
+    for (let tx = xMin; tx <= xMax; tx++) {
+      for (let ty = yNE; ty <= ySW; ty++) {
+        const [lonTL, latTL] = tileToLonLat(tx, ty, zoom);
+        const [lonBR, latBR] = tileToLonLat(tx + 1, ty + 1, zoom);
+        const ptTL = projection([lonTL, latTL]);
+        const ptBR = projection([lonBR, latBR]);
+        if (!ptTL || !ptBR) continue;
+        result.push({
+          x: tx, y: ty, z: zoom,
+          svgX: ptTL[0], svgY: ptTL[1],
+          svgW: ptBR[0] - ptTL[0], svgH: ptBR[1] - ptTL[1],
+        });
+      }
+    }
+    return result;
+  }, [showSatellite, data, width, projection]);
 
   useEffect(() => {
     if (!svgRef.current) return;
@@ -159,8 +207,7 @@ const D3Map = ({
       });
 
     svg.call(zoomBehavior);
-    
-    // Reset zoom only when dimensions change
+
     svg.call(zoomBehavior.transform, d3.zoomIdentity);
   }, [width, height]);
 
@@ -173,14 +220,13 @@ const D3Map = ({
   }
 
   return (
-    <svg 
+    <svg
       ref={svgRef}
-      width={width} 
-      height={height} 
+      width={width}
+      height={height}
       viewBox={`0 0 ${width} ${height}`}
       className="w-full h-full cursor-move touch-none"
       onClick={(e) => {
-        // Clear selection if clicking on background
         if (e.target === svgRef.current) {
           setSelectedTractId(null);
         }
@@ -188,6 +234,20 @@ const D3Map = ({
     >
       <g transform={transform.toString()}>
         <g transform="translate(20, 20)">
+          {showSatellite &&
+            tiles.map((t) => (
+              <image
+                key={`tile-${t.z}-${t.x}-${t.y}`}
+                href={TILE_URL.replace('{z}', String(t.z))
+                  .replace('{y}', String(t.y))
+                  .replace('{x}', String(t.x))}
+                x={t.svgX}
+                y={t.svgY}
+                width={t.svgW}
+                height={t.svgH}
+                preserveAspectRatio="none"
+              />
+            ))}
           {data.features.map((feature: any, i: number) => {
             const props = feature.properties;
             const tractId = tractIdFromProps(props) || String(i);
@@ -204,9 +264,9 @@ const D3Map = ({
                 key={i}
                 d={d}
                 fill={color}
-                stroke={isSelected ? "#4F46E5" : "white"}
+                stroke={isSelected ? '#4F46E5' : showSatellite ? 'rgba(255,255,255,0.4)' : 'white'}
                 strokeWidth={isSelected ? 3 / transform.k : isHovered ? 2 / transform.k : 0.5 / transform.k}
-                fillOpacity={isSelected || isHovered ? 1 : 0.8}
+                fillOpacity={showSatellite ? (isSelected || isHovered ? 0.9 : 0.75) : (isSelected || isHovered ? 1 : 0.8)}
                 className="transition-colors duration-200 cursor-pointer hover:stroke-primary"
                 onMouseEnter={() => setHoveredTract(props)}
                 onMouseMove={(e) => setMousePos({ x: e.clientX, y: e.clientY })}
@@ -243,6 +303,7 @@ export default function App() {
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [isLoadingMap, setIsLoadingMap] = useState(true);
   const [mapLayerId, setMapLayerId] = useState<MapLayerId>('adi');
+  const [showSatellite, setShowSatellite] = useState(false);
   const [tractFeatures, setTractFeatures] = useState<Map<string, Record<string, number>> | null>(null);
   const [isLoadingFeatures, setIsLoadingFeatures] = useState(true);
 
@@ -302,7 +363,9 @@ export default function App() {
     });
     if (vals.length === 0) return [0, 1];
     const lo = d3.min(vals) ?? 0;
-    const hi = d3.max(vals) ?? 1;
+    vals.sort((a, b) => a - b);
+    const p95Idx = Math.floor(vals.length * 0.95);
+    const hi = vals[Math.min(p95Idx, vals.length - 1)];
     if (lo === hi) return [lo - 1e-9, hi + 1e-9];
     return [lo, hi];
   }, [mapLayerId, tractFeatures]);
@@ -632,6 +695,7 @@ export default function App() {
                   setSelectedTractId={setSelectedTractId}
                   setMousePos={setMousePos}
                   fillForTract={fillForTract}
+                  showSatellite={showSatellite}
                 />
               )}
             </div>
@@ -724,6 +788,19 @@ export default function App() {
                   <p className="text-[10px] text-secondary">Load tract features CSV to see this layer.</p>
                 )}
               </div>
+
+              {/* Satellite toggle */}
+              <button
+                type="button"
+                onClick={() => setShowSatellite((s) => !s)}
+                className={`pointer-events-auto absolute top-14 right-4 z-20 px-3 py-1.5 rounded-lg text-[11px] font-bold shadow-md border transition-colors ${
+                  showSatellite
+                    ? 'bg-slate-800 text-white border-slate-600'
+                    : 'bg-white/95 text-slate-700 border-slate-300 hover:bg-slate-100'
+                }`}
+              >
+                {showSatellite ? 'Hide satellite' : 'Satellite'}
+              </button>
 
               {/* Floating Tooltip (Hover State) */}
               <AnimatePresence>

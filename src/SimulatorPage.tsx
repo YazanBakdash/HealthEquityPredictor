@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as d3 from 'd3';
-import { INITIAL_POLICY_AREAS, BASE_LIFE_EXPECTANCY } from './constants';
+import { INITIAL_POLICY_AREAS } from './constants';
 import D3Map, { EXCLUDED_TRACTS, tractIdFromProps } from './D3Map';
 import {
   ALL_TRACT_FEATURES_CSV_URL,
@@ -63,30 +63,6 @@ function formatLayerValue(layerId: MapLayerId, v: number): string {
   return `${v.toFixed(decimals)}${meta?.unit ?? ''}`;
 }
 
-function getTractColor(
-  tractId: string,
-  globalParams: Record<string, number>,
-  overrides: Record<string, Record<string, number>>,
-) {
-  let outcome = BASE_LIFE_EXPECTANCY;
-  const tractOverrides = overrides[tractId] || {};
-
-  INITIAL_POLICY_AREAS.forEach((area) => {
-    area.parameters.forEach((p) => {
-      const currentValue =
-        tractOverrides[p.id] !== undefined ? tractOverrides[p.id] : globalParams[p.id];
-      outcome += (currentValue - p.value) * p.impact;
-    });
-  });
-
-  const hash = tractId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-  const finalVal = outcome + (hash % 16) - 8;
-
-  if (finalVal < 72) return '#BA1A1A';
-  if (finalVal < 76) return '#E98D8D';
-  if (finalVal < 80) return '#AEC7F7';
-  return '#4EDEA3';
-}
 
 export default function SimulatorPage() {
   const navigate = useNavigate();
@@ -165,7 +141,7 @@ export default function SimulatorPage() {
   const activeLayerMeta = useMemo(() => layerMeta(mapLayerId), [mapLayerId]);
 
   const featureExtent = useMemo((): [number, number] | null => {
-    if (mapLayerId === 'adi' || !tractFeatures) return null;
+    if (!tractFeatures) return null;
     const vals: number[] = [];
     tractFeatures.forEach((row) => {
       const v = row[mapLayerId];
@@ -181,15 +157,12 @@ export default function SimulatorPage() {
   }, [mapLayerId, tractFeatures]);
 
   const featureColorScale = useMemo(() => {
-    if (mapLayerId === 'adi' || !featureExtent || !activeLayerMeta) return null;
+    if (!featureExtent || !activeLayerMeta) return null;
     const interp = interpolatorFromRamp(activeLayerMeta.colorRamp);
     return d3.scaleSequential(interp).domain(featureExtent);
   }, [activeLayerMeta, featureExtent, mapLayerId]);
 
   const fillForTract = useMemo(() => {
-    if (mapLayerId === 'adi') {
-      return (tractId: string) => getTractColor(tractId, parameterValues, tractOverrides);
-    }
     if (!tractFeatures || !featureColorScale) {
       return () => '#cbd5e1';
     }
@@ -199,22 +172,12 @@ export default function SimulatorPage() {
       if (typeof v !== 'number' || !Number.isFinite(v)) return '#cbd5e1';
       return featureColorScale(v);
     };
-  }, [featureColorScale, mapLayerId, parameterValues, tractFeatures, tractOverrides]);
+  }, [featureColorScale, mapLayerId, tractFeatures]);
 
   const currentArea = useMemo(
     () => INITIAL_POLICY_AREAS.find((a) => a.id === currentAreaId) || null,
     [currentAreaId],
   );
-
-  const predictedOutcome = useMemo(() => {
-    let outcome = BASE_LIFE_EXPECTANCY;
-    INITIAL_POLICY_AREAS.forEach((area) => {
-      area.parameters.forEach((p) => {
-        outcome += (parameterValues[p.id] - p.value) * p.impact;
-      });
-    });
-    return outcome;
-  }, [parameterValues]);
 
   const handleParamChange = (id: string, value: number) => {
     if (selectedTractId) {
@@ -227,27 +190,31 @@ export default function SimulatorPage() {
     }
   };
 
-  const getTractOutcomeValue = (tractId: string) => {
-    let outcome = BASE_LIFE_EXPECTANCY;
-    const ov = tractOverrides[tractId] || {};
-    INITIAL_POLICY_AREAS.forEach((area) => {
-      area.parameters.forEach((p) => {
-        const val = ov[p.id] !== undefined ? ov[p.id] : parameterValues[p.id];
-        outcome += (val - p.value) * p.impact;
-      });
-    });
-    const hash = tractId.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
-    return outcome + (hash % 16) - 8;
+  const ADI_NATIONAL_AVG = 100;
+
+  const getTractAdi = (tractId: string): number | null => {
+    const v = tractFeatures?.get(tractId)?.['adi'];
+    return typeof v === 'number' && Number.isFinite(v) ? v : null;
   };
 
-  const currentOutcome = useMemo(() => {
-    if (selectedTractId) return getTractOutcomeValue(selectedTractId);
-    return predictedOutcome;
-  }, [selectedTractId, tractOverrides, parameterValues, predictedOutcome]);
+  const currentAdi = useMemo(() => {
+    if (selectedTractId) return getTractAdi(selectedTractId);
+    if (!tractFeatures) return null;
+    let sum = 0;
+    let count = 0;
+    tractFeatures.forEach((row) => {
+      const v = row['adi'];
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        sum += v;
+        count++;
+      }
+    });
+    return count > 0 ? sum / count : null;
+  }, [selectedTractId, tractFeatures]);
 
-  const currentOutcomeDiff = useMemo(
-    () => currentOutcome - BASE_LIFE_EXPECTANCY,
-    [currentOutcome],
+  const currentAdiDiff = useMemo(
+    () => (currentAdi != null ? currentAdi - ADI_NATIONAL_AVG : null),
+    [currentAdi],
   );
 
   const handleRunSimulation = () => {
@@ -453,27 +420,29 @@ export default function SimulatorPage() {
               <div className="flex flex-col">
                 <h3 className="text-[8px] font-bold uppercase tracking-[0.2em] mb-1 opacity-70">
                   {selectedTractId
-                    ? `Tract ${selectedTractId} Outcome`
-                    : 'City-Wide Outcome'}
+                    ? `Tract ${selectedTractId} ADI`
+                    : 'City-Wide Average ADI'}
                 </h3>
                 <div className="flex items-baseline justify-between">
                   <span className="text-3xl font-extrabold font-headline tracking-tighter">
-                    {currentOutcome.toFixed(1)}
+                    {currentAdi != null ? currentAdi.toFixed(1) : '—'}
                   </span>
-                  <div className="flex items-center gap-1 bg-white/10 px-2 py-1 rounded">
-                    <TrendingUp
-                      className={`w-3 h-3 ${currentOutcomeDiff >= 0 ? 'text-success' : 'text-error'}`}
-                    />
-                    <span
-                      className={`text-xs font-bold font-headline ${currentOutcomeDiff >= 0 ? 'text-success' : 'text-error'}`}
-                    >
-                      {currentOutcomeDiff >= 0 ? '+' : ''}
-                      {currentOutcomeDiff.toFixed(2)}
-                    </span>
-                  </div>
+                  {currentAdiDiff != null && (
+                    <div className="flex items-center gap-1 bg-white/10 px-2 py-1 rounded">
+                      <TrendingUp
+                        className={`w-3 h-3 ${currentAdiDiff <= 0 ? 'text-success' : 'text-error'}`}
+                      />
+                      <span
+                        className={`text-xs font-bold font-headline ${currentAdiDiff <= 0 ? 'text-success' : 'text-error'}`}
+                      >
+                        {currentAdiDiff >= 0 ? '+' : ''}
+                        {currentAdiDiff.toFixed(1)}
+                      </span>
+                    </div>
+                  )}
                 </div>
                 <p className="text-[9px] font-medium opacity-60 mt-1">
-                  Average ADI
+                  vs national avg (100)
                 </p>
               </div>
             </div>
@@ -545,28 +514,7 @@ export default function SimulatorPage() {
               <div className="flex-1 relative pointer-events-none">
                 {/* Legend */}
                 <div className="absolute bottom-6 left-6 glass-panel p-4 rounded-lg shadow-xl border border-white/50 pointer-events-auto max-w-[260px]">
-                  {mapLayerId === 'adi' ? (
-                    <>
-                      <h4 className="text-[10px] font-bold text-secondary uppercase mb-3 tracking-widest">
-                        ADI (Area Deprivation Index)
-                      </h4>
-                      <div className="flex flex-col gap-2">
-                        {[
-                          { color: 'bg-error', label: '68 - 72' },
-                          { color: 'bg-[#E98D8D]', label: '72 - 76' },
-                          { color: 'bg-[#AEC7F7]', label: '76 - 80' },
-                          { color: 'bg-success', label: '80 - 84+' },
-                        ].map((item, i) => (
-                          <div key={i} className="flex items-center gap-2">
-                            <div className={`w-3 h-3 rounded-sm ${item.color}`} />
-                            <span className="text-[11px] font-semibold text-on-surface">
-                              {item.label}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </>
-                  ) : activeLayerMeta && featureExtent ? (
+                  {activeLayerMeta && featureExtent ? (
                     <>
                       <h4 className="text-[10px] font-bold text-secondary uppercase mb-1 tracking-widest">
                         {activeLayerMeta.label}
@@ -643,9 +591,6 @@ export default function SimulatorPage() {
                         <span className="text-sm font-bold text-on-surface">
                           {(() => {
                             const tractId = tractIdFromProps(hoveredTract);
-                            if (mapLayerId === 'adi') {
-                              return getTractOutcomeValue(tractId).toFixed(1);
-                            }
                             const v = tractFeatures?.get(tractId)?.[mapLayerId];
                             return formatLayerValue(
                               mapLayerId,
@@ -654,15 +599,6 @@ export default function SimulatorPage() {
                           })()}
                         </span>
                       </div>
-                      {mapLayerId === 'adi' && (
-                        <div className="w-full bg-surface-container h-1 rounded-full mt-1 overflow-hidden">
-                          <motion.div
-                            initial={{ width: '40%' }}
-                            animate={{ width: '60%' }}
-                            className="bg-primary h-full"
-                          />
-                        </div>
-                      )}
                     </motion.div>
                   )}
                 </AnimatePresence>

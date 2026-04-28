@@ -40,7 +40,7 @@ export type LayerMeta = {
 };
 
 export const MAP_LAYER_ORDER: LayerMeta[] = [
-  { id: 'adi', label: 'ADI', subtitle: 'Simulated outcome (policy sliders)', colorRamp: 'ylgn', unit: '', decimals: 1 },
+  { id: 'adi', label: 'ADI', subtitle: 'Area Deprivation Index (higher = more deprived)', colorRamp: 'magma', unit: '', decimals: 1 },
   {
     id: 'Affordable_Housing',
     label: 'Affordable housing',

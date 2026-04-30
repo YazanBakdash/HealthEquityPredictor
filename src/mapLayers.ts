@@ -39,6 +39,13 @@ export type LayerMeta = {
   decimals: number;
 };
 
+export type MarkerPoint = {
+  id: string;
+  x: number;
+  y: number;
+  type: 'school' | 'library';
+};
+
 export const MAP_LAYER_ORDER: LayerMeta[] = [
   { id: 'adi', label: 'ADI', subtitle: 'Area Deprivation Index (higher = more deprived)', colorRamp: 'magma', unit: '', decimals: 1 },
   {

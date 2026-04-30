@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { MarkerPoint } from './mapLayers'
 import {
   Map as MapIcon,
   Activity,
@@ -45,6 +46,7 @@ function interpolatorFromRamp(ramp: LayerMeta['colorRamp']) {
       return d3.interpolateReds;
     case 'greens':
       return d3.interpolateGreens;
+    
     case 'greys':
       return d3.interpolateGreys;
     case 'teal':
@@ -93,6 +95,14 @@ export default function SimulatorPage() {
     Record<string, number>
   > | null>(null);
   const [isLoadingFeatures, setIsLoadingFeatures] = useState(true);
+  const [bikeMiles, setBikeMiles] = useState<{x: number, y: number}[]>([]);
+  const isBikeMilesLayer = mapLayerId === 'Bike_Miles'; 
+  const [isDrawingMode, setIsDrawingMode] = useState(false);
+
+  const [markers, setMarkers] = useState<MarkerPoint[]>([]);
+  const isSchoolLayer = mapLayerId === 'School_Density';
+  const isLibraryLayer = mapLayerId === 'Library_Count';
+  const isMarkerLayer = isSchoolLayer || isLibraryLayer;
 
   useEffect(() => {
     setIsLoadingMap(true);
@@ -477,6 +487,15 @@ export default function SimulatorPage() {
                   setMousePos={setMousePos}
                   fillForTract={fillForTract}
                   showSatellite={showSatellite}
+                  bikeMiles={bikeMiles}
+                  setBikeMiles={setBikeMiles}
+                  isBikeMilesLayer={isBikeMilesLayer}
+                  isDrawingMode={isDrawingMode}      
+                  setIsDrawingMode={setIsDrawingMode} 
+                  markers={markers}
+                  setMarkers={setMarkers}
+                  isMarkerLayer={isMarkerLayer}
+                  markerType={isSchoolLayer ? 'school' : isLibraryLayer ? 'library' : null}
                 />
               )}
             </div>
@@ -562,6 +581,46 @@ export default function SimulatorPage() {
                 >
                   {showSatellite ? 'Hide satellite' : 'Satellite'}
                 </button>
+
+                {isBikeMilesLayer && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setIsDrawingMode(s => !s)}
+                    className={`pointer-events-auto absolute top-24 right-4 z-20 px-3 py-1.5 rounded-lg text-[11px] font-bold shadow-md border transition-colors ${
+                      isDrawingMode
+                        ? 'bg-green-600 text-white border-green-700'
+                        : 'bg-white/95 text-slate-700 border-slate-300 hover:bg-slate-100'
+                    }`}
+                  >
+                    {isDrawingMode ? 'Done drawing' : 'Add bike miles'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBikeMiles([])}
+                    className="pointer-events-auto absolute top-36 right-4 z-20 px-3 py-1.5 rounded-lg text-[11px] font-bold shadow-md border transition-colors bg-white/95 text-red-500 border-red-300 hover:bg-red-50"
+                  >
+                    Clear
+                  </button>
+                </>
+                )}
+
+                {isMarkerLayer && (
+                  <>
+                    <div className="pointer-events-auto absolute top-24 right-4 z-20 px-3 py-1.5 rounded-lg text-[11px] font-bold shadow-md border bg-white/95 text-slate-700 border-slate-300">
+                      {isSchoolLayer ? '🏫 Click map to add school' : '📚 Click map to add library'}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setMarkers(m => m.filter(p => p.type !== (isSchoolLayer ? 'school' : 'library')))
+                      }
+                      className="pointer-events-auto absolute top-36 right-4 z-20 px-3 py-1.5 rounded-lg text-[11px] font-bold shadow-md border transition-colors bg-white/95 text-red-500 border-red-300 hover:bg-red-50"
+                    >
+                      Clear {isSchoolLayer ? 'schools' : 'libraries'}
+                    </button>
+                  </>
+                )}
 
                 {/* Floating Tooltip */}
                 <AnimatePresence>

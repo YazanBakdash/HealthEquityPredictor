@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import * as d3 from 'd3';
 
 const TILE_URL =
@@ -23,6 +23,18 @@ export function tractIdFromProps(props: any): string {
       props?.TRACT_FIPS ??
       '',
   );
+}
+
+function pointInPolygon(x: number, y: number, polygon: [number, number][]): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i][0], yi = polygon[i][1];
+    const xj = polygon[j][0], yj = polygon[j][1];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
 }
 
 function lonLatToTile(lon: number, lat: number, zoom: number): [number, number] {
@@ -53,6 +65,16 @@ type D3MapProps = {
   setMousePos: (p: { x: number; y: number }) => void;
   fillForTract: (tractId: string) => string;
   showSatellite: boolean;
+  bikeMiles: {x: number, y: number}[];
+  setBikeMiles: (miles: {x: number, y: number}[]) => void;
+  isBikeMilesLayer: boolean;
+  isDrawingMode: boolean;
+  setIsDrawingMode: (v: boolean) => void;
+  markers: MarkerPoint[];
+  setMarkers: (m: MarkerPoint[]) => void;
+  isMarkerLayer: boolean;
+  markerType: 'school' | 'library' | null;
+  
 };
 
 export default function D3Map({
@@ -66,6 +88,15 @@ export default function D3Map({
   setMousePos,
   fillForTract,
   showSatellite,
+  bikeMiles,        
+  setBikeMiles,     
+  isBikeMilesLayer,
+  isDrawingMode,     
+  setIsDrawingMode,
+  markers,
+  setMarkers,
+  isMarkerLayer,
+  markerType,
 }: D3MapProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [transform, setTransform] = useState(d3.zoomIdentity);
@@ -83,6 +114,31 @@ export default function D3Map({
     () => d3.geoPath().projection(projection),
     [projection],
   );
+
+  const mapBounds = useMemo(() => {
+    if (!data?.features?.length) return null;
+    const [[x0, y0], [x1, y1]] = d3.geoPath().projection(projection).bounds(data);
+    return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+  }, [data, projection]);
+
+  const isPointOnMap = useCallback((x: number, y: number): boolean => {
+    if (!data?.features?.length) return false;
+    const lonLat = projection.invert?.([x, y]);
+    if (!lonLat) return false;
+    const [lon, lat] = lonLat;
+    return data.features.some((feature: any) => {
+      const geom = feature.geometry;
+      if (!geom) return false;
+      const rings = geom.type === 'Polygon'
+        ? [geom.coordinates[0]]
+        : geom.type === 'MultiPolygon'
+        ? geom.coordinates.map((p: any) => p[0])
+        : [];
+      return rings.some((ring: [number, number][]) =>
+        pointInPolygon(lon, lat, ring)
+      );
+    });
+  }, [data, projection]);
 
   const tiles = useMemo(() => {
     if (!showSatellite) return [];
@@ -137,9 +193,13 @@ export default function D3Map({
         setTransform(event.transform);
       });
 
-    svg.call(zoomBehavior);
-    svg.call(zoomBehavior.transform, d3.zoomIdentity);
-  }, [width, height]);
+    if (isDrawingMode) {
+      // disable zoom while drawing
+      svg.on('.zoom', null);
+    } else {
+      svg.call(zoomBehavior);
+    }
+  }, [width, height, isDrawingMode]);
 
   if (!data?.features?.length) {
     return (
@@ -155,12 +215,44 @@ export default function D3Map({
       width={width}
       height={height}
       viewBox={`0 0 ${width} ${height}`}
-      className="w-full h-full cursor-move touch-none"
+      className={`w-full h-full touch-none ${isDrawingMode ? 'cursor-crosshair' : 'cursor-move'}`}
       onClick={(e) => {
-        if (e.target === svgRef.current) {
-          setSelectedTractId(null);
+        if (e.target !== svgRef.current) return;
+        if (isMarkerLayer && markerType) {
+          const rect = svgRef.current!.getBoundingClientRect();
+          const x = (e.clientX - rect.left - 20 - transform.x) / transform.k;
+          const y = (e.clientY - rect.top - 20 - transform.y) / transform.k;
+          if (isPointOnMap(x, y)) {
+            setMarkers([
+              ...markers,
+              { id: `${markerType}-${Date.now()}`, x, y, type: markerType },
+            ]);
+          }
+          return;
         }
+        setSelectedTractId(null);
       }}
+
+        onMouseMove={(e) => {
+          if (!isDrawingMode || e.buttons !== 1) return;
+          e.stopPropagation();
+          const rect = svgRef.current!.getBoundingClientRect();
+          const x = (e.clientX - rect.left - 20 - transform.x) / transform.k;
+          const y = (e.clientY - rect.top - 20 - transform.y) / transform.k;
+          if (
+            mapBounds &&
+            x >= mapBounds.x && x <= mapBounds.x + mapBounds.width &&
+            y >= mapBounds.y && y <= mapBounds.y + mapBounds.height
+          )
+          if (isPointOnMap(x, y)) {
+          setBikeMiles([...bikeMiles, {x, y}]);
+          }
+        }}
+        onMouseDown={(e) => {
+          if (!isDrawingMode) return;
+          e.preventDefault();
+          e.stopPropagation(); 
+        }}
     >
       <g transform={transform.toString()}>
         <g transform="translate(20, 20)">
@@ -221,11 +313,98 @@ export default function D3Map({
                 onMouseLeave={() => setHoveredTract(null)}
                 onClick={(e) => {
                   e.stopPropagation();
+                  if (isMarkerLayer && markerType) {
+                    const rect = svgRef.current!.getBoundingClientRect();
+                    const x = (e.clientX - rect.left - 20 - transform.x) / transform.k;
+                    const y = (e.clientY - rect.top - 20 - transform.y) / transform.k;
+                    if (isPointOnMap(x, y)) {
+                      setMarkers([
+                        ...markers,
+                        { id: `${markerType}-${Date.now()}`, x, y, type: markerType },
+                      ]);
+                    }
+                    return;
+                  }
                   setSelectedTractId(tractId);
                 }}
               />
             );
           })}
+
+          {isBikeMilesLayer && bikeMiles.length > 1 && (
+            <>
+              <polyline
+                points={bikeMiles.map(p => `${p.x},${p.y}`).join(' ')}
+                fill="none"
+                stroke="#22c55e"
+                strokeWidth={3 / transform.k}
+                strokeLinecap="round"
+                clipPath="url(#map-clip)" 
+              />
+            </>
+            )}
+
+          {markers.map(marker => (
+            <g
+              key={marker.id}
+              transform={`translate(${marker.x}, ${marker.y})`}
+              className="cursor-pointer"
+              onClick={(e) => {
+                e.stopPropagation();
+                setMarkers(markers.filter(m => m.id !== marker.id));
+              }}
+            >
+              {marker.type === 'school' ? (
+                <>
+                  <rect
+                    x={-10 / transform.k}
+                    y={-10 / transform.k}
+                    width={20 / transform.k}
+                    height={20 / transform.k}
+                    rx={3 / transform.k}
+                    fill="#3B82F6"
+                    stroke="white"
+                    strokeWidth={1.5 / transform.k}
+                  />
+                  <text
+                    x={0}
+                    y={1 / transform.k}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fill="white"
+                    fontSize={11 / transform.k}
+                    fontWeight="bold"
+                  >
+                    S
+                  </text>
+                </>
+              ) : (
+                <>
+                  <rect
+                    x={-10 / transform.k}
+                    y={-10 / transform.k}
+                    width={20 / transform.k}
+                    height={20 / transform.k}
+                    rx={3 / transform.k}
+                    fill="#7C3AED"
+                    stroke="white"
+                    strokeWidth={1.5 / transform.k}
+                  />
+                  <text
+                    x={0}
+                    y={1 / transform.k}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fill="white"
+                    fontSize={11 / transform.k}
+                    fontWeight="bold"
+                  >
+                    L
+                  </text>
+                </>
+              )}
+            </g>
+          ))}  
         </g>
       </g>
     </svg>

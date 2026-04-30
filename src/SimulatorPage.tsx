@@ -30,6 +30,15 @@ import {
 
 const CHICAGO_GEOJSON_URL = '/census_tracts.json';
 
+const ADJUSTABLE_LAYERS: Partial<Record<MapLayerId, { min: number; max: number; step: number; unit: string; label: string }>> = {
+  Tree_Canopy:   { min: 0,  max: 100, step: 1,   unit: '%',        label: 'Tree Canopy Coverage' },
+  Parks:         { min: 0,  max: 500, step: 5,    unit: ' ac/mi²',  label: 'Park Acreage' },
+  Small_Business:{ min: 0,  max: 50,  step: 0.5,  unit: ' / 1k',   label: 'Small Businesses' },
+  Wifi_Hotspots: { min: 0,  max: 20,  step: 0.5,  unit: ' / mi²',  label: 'Wi-Fi Hotspots' },
+  Grocery_Store: { min: 0,  max: 20,  step: 0.5,  unit: ' / 1k',   label: 'Grocery Stores' },
+  Transit_Stop:  { min: 0,  max: 100, step: 1,    unit: ' / 10k',  label: 'Transit Stops' },
+};
+
 function interpolatorFromRamp(ramp: LayerMeta['colorRamp']) {
   switch (ramp) {
     case 'ylgn':
@@ -103,6 +112,10 @@ export default function SimulatorPage() {
   const isSchoolLayer = mapLayerId === 'School_Density';
   const isLibraryLayer = mapLayerId === 'Library_Count';
   const isMarkerLayer = isSchoolLayer || isLibraryLayer;
+
+  const [layerAdjustments, setLayerAdjustments] = useState<Record<string, number>>({});
+  const isAdjustableLayer = mapLayerId in ADJUSTABLE_LAYERS;
+  const activeAdjustable = ADJUSTABLE_LAYERS[mapLayerId];
 
   useEffect(() => {
     setIsLoadingMap(true);
@@ -301,12 +314,9 @@ export default function SimulatorPage() {
                   <div className="w-12 h-12 rounded-full bg-primary/5 flex items-center justify-center mb-4">
                     <MapIcon className="w-6 h-6 text-primary/40" />
                   </div>
-                  <h3 className="text-sm font-bold text-on-surface mb-2">
-                    No Tract Selected
-                  </h3>
+                  <h3 className="text-sm font-bold text-on-surface mb-2">No Tract Selected</h3>
                   <p className="text-xs text-secondary leading-relaxed">
-                    Select a census tract on the map to adjust its specific
-                    policy parameters and see local impacts.
+                    Select a census tract on the map to adjust its specific policy parameters and see local impacts.
                   </p>
                 </motion.div>
               ) : !currentAreaId ? (
@@ -317,6 +327,7 @@ export default function SimulatorPage() {
                   exit={{ x: -20, opacity: 0 }}
                   className="flex flex-col gap-1"
                 >
+                  
                   <div className="flex items-center justify-between px-3 mb-4">
                     <h2 className="text-[10px] font-bold text-secondary uppercase tracking-[0.2em] opacity-60">
                       Policy Areas
@@ -426,6 +437,61 @@ export default function SimulatorPage() {
 
           {/* Persistent Outcome Card */}
           <div className="mt-auto pt-4 border-t border-outline-variant/20">
+
+          {isAdjustableLayer && activeAdjustable && (
+            <div className="mb-3 p-3 bg-white rounded-lg border border-outline-variant/20 shadow-sm">
+              <div className="flex justify-between mb-1">
+                <label className="text-[10px] font-bold text-secondary uppercase tracking-wider">
+                  {activeAdjustable.label}
+                  {selectedTractId && (
+                    <span className="ml-1 text-primary normal-case font-normal">· 0.25mi</span>
+                  )}
+                </label>
+                <span className="text-xs font-bold text-primary">
+                  {(layerAdjustments[mapLayerId] ?? featureExtent?.[0] ?? 0).toFixed(
+                    activeAdjustable.step < 1 ? 1 : 0
+                  )}
+                  {activeAdjustable.unit}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={activeAdjustable.min}
+                max={activeAdjustable.max}
+                step={activeAdjustable.step}
+                value={layerAdjustments[mapLayerId] ?? featureExtent?.[0] ?? activeAdjustable.min}
+                onChange={(e) =>
+                  setLayerAdjustments(prev => ({
+                    ...prev,
+                    [mapLayerId]: parseFloat(e.target.value),
+                  }))
+                }
+                className="w-full h-1 bg-surface-container-high rounded-full appearance-none cursor-pointer accent-primary"
+              />
+              <div className="flex justify-between text-[9px] text-secondary mt-1">
+                <span>{activeAdjustable.min}{activeAdjustable.unit}</span>
+                <span>{activeAdjustable.max}{activeAdjustable.unit}</span>
+              </div>
+            </div>
+          )}
+            <button
+              onClick={handleRunSimulation}
+              disabled={isSimulating}
+              className="w-full mb-3 py-3 bg-primary text-white rounded-lg font-bold shadow-lg shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2 text-sm disabled:opacity-50 disabled:scale-100"
+            >
+              {isSimulating ? (
+                <motion.div
+                  animate={{ rotate: 360 }}
+                  transition={{ repeat: Infinity, duration: 1, ease: 'linear' }}
+                >
+                  <Activity className="w-4 h-4" />
+                </motion.div>
+              ) : (
+                <Play className="w-4 h-4 fill-current" />
+              )}
+              {isSimulating ? 'Processing...' : 'Run Simulation'}
+            </button>
+
             <div className="bg-primary rounded-lg text-white p-4 shadow-lg border border-primary/20 py-6">
               <div className="flex flex-col">
                 <h3 className="text-[8px] font-bold uppercase tracking-[0.2em] mb-1 opacity-70">
@@ -608,7 +674,10 @@ export default function SimulatorPage() {
                 {isMarkerLayer && (
                   <>
                     <div className="pointer-events-auto absolute top-24 right-4 z-20 px-3 py-1.5 rounded-lg text-[11px] font-bold shadow-md border bg-white/95 text-slate-700 border-slate-300">
-                      {isSchoolLayer ? '🏫 Click map to add school' : '📚 Click map to add library'}
+                      {selectedTractId
+                        ? (isSchoolLayer ? '🏫 Click map to add school' : '📚 Click map to add library')
+                        : (isSchoolLayer ? '🏫 Select a tract first' : '📚 Select a tract first')
+                      }
                     </div>
                     <button
                       type="button"

@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import * as d3 from 'd3';
+import { MarkerPoint } from './mapLayers';
 
 const TILE_URL =
   'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+
+
+const QUARTER_MILE_DEGREES = 0.25 / 69;
+const BORDER_BUFFER_DEGREES = 0.02 / 69;
 
 export const EXCLUDED_TRACTS = new Set([
   '17031760900',
@@ -140,6 +145,90 @@ export default function D3Map({
     });
   }, [data, projection]);
 
+
+const isPointNearTract = useCallback((x: number, y: number): boolean => {
+  if (!selectedTractId || !data?.features?.length) return true;
+  const clickLonLat = projection.invert?.([x, y]);
+  if (!clickLonLat) return false;
+  const [clickLon, clickLat] = clickLonLat;
+
+  const selectedFeature = data.features.find(
+    (f: any) => tractIdFromProps(f.properties) === selectedTractId
+  );
+  if (!selectedFeature) return true;
+
+  const geom = selectedFeature.geometry;
+  const rings = geom.type === 'Polygon'
+    ? [geom.coordinates[0]]
+    : geom.type === 'MultiPolygon'
+    ? geom.coordinates.map((p: any) => p[0])
+    : [];
+
+  // First check if inside the tract itself
+  if (rings.some((ring: [number, number][]) => pointInPolygon(clickLon, clickLat, ring))) {
+    return true;
+  }
+
+  // Then check if within 0.25mi of any tract vertex
+  const cosLat = Math.cos((clickLat * Math.PI) / 180);
+  for (const ring of rings) {
+    for (const [lon, lat] of ring as [number, number][]) {
+      const dLat = clickLat - lat;
+      const dLon = (clickLon - lon) * cosLat;
+      const distDeg = Math.sqrt(dLat * dLat + dLon * dLon);
+      if (distDeg < QUARTER_MILE_DEGREES) return true;
+    }
+  }
+  return false;
+}, [selectedTractId, data, projection]);
+
+const isPointNearTractBorder = useCallback((x: number, y: number): boolean => {
+  if (!selectedTractId || !data?.features?.length) return true;
+  const clickLonLat = projection.invert?.([x, y]);
+  if (!clickLonLat) return false;
+  const [clickLon, clickLat] = clickLonLat;
+
+  const selectedFeature = data.features.find(
+    (f: any) => tractIdFromProps(f.properties) === selectedTractId
+  );
+  if (!selectedFeature) return true;
+
+  const geom = selectedFeature.geometry;
+  const rings = geom.type === 'Polygon'
+    ? [geom.coordinates[0]]
+    : geom.type === 'MultiPolygon'
+    ? geom.coordinates.map((p: any) => p[0])
+    : [];
+
+  const cosLat = Math.cos((clickLat * Math.PI) / 180);
+
+  // Check distance from each edge segment of the tract border
+  for (const ring of rings) {
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [x1, y1] = ring[j] as [number, number];
+      const [x2, y2] = ring[i] as [number, number];
+
+      // Project everything to account for longitude compression at latitude
+      const px = (clickLon - x1) * cosLat;
+      const py = clickLat - y1;
+      const dx = (x2 - x1) * cosLat;
+      const dy = y2 - y1;
+      const lenSq = dx * dx + dy * dy;
+
+      let t = lenSq > 0 ? Math.max(0, Math.min(1, (px * dx + py * dy) / lenSq)) : 0;
+      const nearestX = x1 + t * (x2 - x1);
+      const nearestY = y1 + t * (y2 - y1);
+
+      const distLon = (clickLon - nearestX) * cosLat;
+      const distLat = clickLat - nearestY;
+      const distDeg = Math.sqrt(distLon * distLon + distLat * distLat);
+
+      if (distDeg < BORDER_BUFFER_DEGREES) return true;
+    }
+  }
+  return false;
+}, [selectedTractId, data, projection]);
+
   const tiles = useMemo(() => {
     if (!showSatellite) return [];
     const bbox = d3.geoBounds(data);
@@ -222,7 +311,8 @@ export default function D3Map({
           const rect = svgRef.current!.getBoundingClientRect();
           const x = (e.clientX - rect.left - transform.x) / transform.k - 20;
           const y = (e.clientY - rect.top - transform.y) / transform.k - 20;
-          if (isPointOnMap(x, y)) {
+          const withinBounds = selectedTractId ? isPointNearTract(x, y) : isPointOnMap(x, y);
+          if (withinBounds) {
             setMarkers([
               ...markers,
               { id: `${markerType}-${Date.now()}`, x, y, type: markerType },
@@ -244,7 +334,7 @@ export default function D3Map({
             x >= mapBounds.x && x <= mapBounds.x + mapBounds.width &&
             y >= mapBounds.y && y <= mapBounds.y + mapBounds.height
           )
-          if (isPointOnMap(x, y)) {
+          if (isPointOnMap(x, y) && isPointNearTract(x, y)) {
           setBikeMiles([...bikeMiles, {x, y}]);
           }
         }}
@@ -313,11 +403,12 @@ export default function D3Map({
                 onMouseLeave={() => setHoveredTract(null)}
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (isMarkerLayer && markerType) {
+                  if (isMarkerLayer && markerType && selectedTractId) {
+                    // Only place marker if a tract is already selected
                     const rect = svgRef.current!.getBoundingClientRect();
                     const x = (e.clientX - rect.left - transform.x) / transform.k - 20;
                     const y = (e.clientY - rect.top - transform.y) / transform.k - 20;
-                    if (isPointOnMap(x, y)) {
+                    if (isPointNearTract(x, y)) {
                       setMarkers([
                         ...markers,
                         { id: `${markerType}-${Date.now()}`, x, y, type: markerType },
@@ -325,6 +416,7 @@ export default function D3Map({
                     }
                     return;
                   }
+                  // No tract selected yet — clicking a tract selects it
                   setSelectedTractId(tractId);
                 }}
               />
@@ -343,6 +435,58 @@ export default function D3Map({
               />
             </>
             )}
+
+          {selectedTractId && (isMarkerLayer || isBikeMilesLayer) && (() => {
+            const selectedFeature = data.features.find(
+              (f: any) => tractIdFromProps(f.properties) === selectedTractId
+            );
+            if (!selectedFeature) return null;
+            const d = pathGenerator(selectedFeature);
+            if (!d) return null;
+
+            const centroid = pathGenerator.centroid(selectedFeature);
+            if (!centroid || isNaN(centroid[0])) return null;
+            const lonLat = projection.invert?.([centroid[0], centroid[1]]);
+            if (!lonLat) return null;
+            const [lon, lat] = lonLat;
+            const bufferDegrees = isMarkerLayer ? QUARTER_MILE_DEGREES : BORDER_BUFFER_DEGREES;
+            const offsetPoint = projection([lon, lat + bufferDegrees]);
+            if (!offsetPoint) return null;
+            const bufferPx = Math.abs(centroid[1] - offsetPoint[1]);
+            const color = isMarkerLayer ? '#6366f1' : '#22c55e';
+            const filterId = `border-buffer-${selectedTractId}`;
+
+            return (
+              <>
+                <defs>
+                  <filter id={filterId} x="-20%" y="-20%" width="140%" height="140%">
+                    <feMorphology operator="dilate" radius={bufferPx} in="SourceGraphic" result="expanded" />
+                    <feComposite in="expanded" in2="SourceGraphic" operator="out" />
+                  </filter>
+                </defs>
+
+                {/* Expanded outer glow — only the part outside the tract */}
+                <path
+                  d={d}
+                  fill={color}
+                  stroke="none"
+                  opacity={0.15}
+                  filter={`url(#${filterId})`}
+                  pointerEvents="none"
+                />
+
+                {/* Tract border outline */}
+                <path
+                  d={d}
+                  fill="rgba(99,102,241,0.03)"
+                  stroke={color}
+                  strokeWidth={1.5 / transform.k}
+                  strokeDasharray={`${6 / transform.k} ${4 / transform.k}`}
+                  pointerEvents="none"
+                />
+              </>
+            );
+          })()}
 
           {markers.map(marker => (
             <g

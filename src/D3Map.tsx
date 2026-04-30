@@ -220,8 +220,8 @@ export default function D3Map({
         if (e.target !== svgRef.current) return;
         if (isMarkerLayer && markerType) {
           const rect = svgRef.current!.getBoundingClientRect();
-          const x = (e.clientX - rect.left - 20 - transform.x) / transform.k;
-          const y = (e.clientY - rect.top - 20 - transform.y) / transform.k;
+          const x = (e.clientX - rect.left - transform.x) / transform.k - 20;
+          const y = (e.clientY - rect.top - transform.y) / transform.k - 20;
           if (isPointOnMap(x, y)) {
             setMarkers([
               ...markers,
@@ -237,8 +237,8 @@ export default function D3Map({
           if (!isDrawingMode || e.buttons !== 1) return;
           e.stopPropagation();
           const rect = svgRef.current!.getBoundingClientRect();
-          const x = (e.clientX - rect.left - 20 - transform.x) / transform.k;
-          const y = (e.clientY - rect.top - 20 - transform.y) / transform.k;
+          const x = (e.clientX - rect.left - transform.x) / transform.k - 20;
+          const y = (e.clientY - rect.top - transform.y) / transform.k - 20;
           if (
             mapBounds &&
             x >= mapBounds.x && x <= mapBounds.x + mapBounds.width &&
@@ -315,8 +315,8 @@ export default function D3Map({
                   e.stopPropagation();
                   if (isMarkerLayer && markerType) {
                     const rect = svgRef.current!.getBoundingClientRect();
-                    const x = (e.clientX - rect.left - 20 - transform.x) / transform.k;
-                    const y = (e.clientY - rect.top - 20 - transform.y) / transform.k;
+                    const x = (e.clientX - rect.left - transform.x) / transform.k - 20;
+                    const y = (e.clientY - rect.top - transform.y) / transform.k - 20;
                     if (isPointOnMap(x, y)) {
                       setMarkers([
                         ...markers,

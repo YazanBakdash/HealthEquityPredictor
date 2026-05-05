@@ -54,7 +54,7 @@ DROP_TRACTS = {"17031030702", "17031980100"}
 POP_FLOOR = 500
 PER_CAPITA_COLS = [
     "Affordable_Housing", "Transit_Stop", "School_Density",
-    "Library_Count", "Small_Business", "Grocery_Store",
+    "Library_Count", "Small_Business", "Food_Access",
 ]
 PER_AREA_COLS = ["Parks", "Bike_Miles", "Wifi_Hotspots"]
 RESCALE_10K_COLS = ["Transit_Stop", "School_Density", "Library_Count"]
@@ -286,8 +286,8 @@ lib_counts = lib_joined.groupby("census_tract")["index_right"].count()
 out["Library_Count"] = out["census_tract"].map(lib_counts).fillna(0).astype(float)
 report(f"  Tracts with >0: {(out['Library_Count'] > 0).sum()}")
 
-# --- Small_Business + Grocery_Store ---
-report("\n--- Small_Business + Grocery_Store ---")
+# --- Small_Business + Food_Access ---
+report("\n--- Small_Business + Food_Access ---")
 biz = pd.read_csv(
     PROC / "Business_Licenses_20260415_with_tracts.csv",
     usecols=["ACCOUNT NUMBER", "SITE NUMBER", "LICENSE STATUS", "LICENSE DESCRIPTION",
@@ -311,11 +311,11 @@ biz_joined = gpd.sjoin(biz_gdf[["LICENSE DESCRIPTION", "geometry"]],
 out["Small_Business"] = out["census_tract"].map(biz_joined["census_tract"].value_counts()).fillna(0).astype(float)
 grocery_mask = biz_joined["LICENSE DESCRIPTION"].astype(str).str.contains(
     r"Retail Food Establishment|Produce Merchant", case=False, na=False, regex=True)
-out["Grocery_Store"] = out["census_tract"].map(
+out["Food_Access"] = out["census_tract"].map(
     biz_joined.loc[grocery_mask, "census_tract"].value_counts()
 ).fillna(0).astype(float)
 report(f"  Small_Business >0: {(out['Small_Business'] > 0).sum()}")
-report(f"  Grocery_Store >0: {(out['Grocery_Store'] > 0).sum()}")
+report(f"  Food_Access >0: {(out['Food_Access'] > 0).sum()}")
 
 
 # ============================================================

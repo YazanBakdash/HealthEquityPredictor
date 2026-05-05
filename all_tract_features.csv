@@ -1,4 +1,4 @@
-census_tract,Tree_Canopy,Affordable_Housing,Parks,Transit_Stop,Bike_Miles,Wifi_Hotspots,School_Density,Library_Count,Small_Business,Grocery_Store
+census_tract,Tree_Canopy,Affordable_Housing,Parks,Transit_Stop,Bike_Miles,Wifi_Hotspots,School_Density,Library_Count,Small_Business,Food_Access
 17031720500,40.5,0.0,23.81803787997398,9.0,0.0,1.0,3.0,2.0,176.0,14.0
 17031730200,21.4,136.0,22.792383962341567,19.0,3.777413222953777,3.0,12.0,3.0,387.0,45.0
 17031730300,21.4,136.0,7.08470536977768,5.0,1.523678358161246,2.0,5.0,2.0,124.0,23.0

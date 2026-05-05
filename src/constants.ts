@@ -7,7 +7,7 @@ export const INITIAL_POLICY_AREAS: PolicyArea[] = [
     icon: 'Map',
     parameters: [
       { id: 'food-env', name: 'Food Environment', value: 65, min: 0, max: 100, unit: '%', impact: 0.02 },
-      { id: 'grocery-access', name: 'Grocery Access', value: 42, min: 0, max: 100, unit: '%', impact: 0.015 },
+      { id: 'food-access', name: 'Food Access', value: 42, min: 0, max: 100, unit: '%', impact: 0.015 },
       { id: 'zone-density', name: 'Zone Density', value: 30, min: 0, max: 100, unit: '%', impact: 0.01 },
     ],
   },

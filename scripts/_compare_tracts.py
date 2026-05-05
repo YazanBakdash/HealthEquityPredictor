@@ -19,7 +19,7 @@ print(f"Only in OLD (lost): {len(only_in_old)}")
 if only_in_new:
     added = new[new['census_tract'].isin(only_in_new)].copy()
     feat_cols = ['Tree_Canopy','Affordable_Housing','Parks','Transit_Stop','Bike_Miles',
-                 'Wifi_Hotspots','School_Density','Library_Count','Small_Business','Grocery_Store']
+                 'Wifi_Hotspots','School_Density','Library_Count','Small_Business','Food_Access']
     added['zero_count'] = (added[feat_cols] == 0).sum(axis=1)
     added_sorted = added.sort_values('census_tract')
     
@@ -34,7 +34,7 @@ if only_in_new:
               f"TC={r['Tree_Canopy']:.1f} AH={r['Affordable_Housing']:.0f} "
               f"P={r['Parks']:.1f} TS={r['Transit_Stop']:.0f} BM={r['Bike_Miles']:.1f} "
               f"WH={r['Wifi_Hotspots']:.0f} SD={r['School_Density']:.0f} "
-              f"LC={r['Library_Count']:.0f} SB={r['Small_Business']:.0f} GS={r['Grocery_Store']:.0f}")
+              f"LC={r['Library_Count']:.0f} SB={r['Small_Business']:.0f} FA={r['Food_Access']:.0f}")
 
     print(f"\nAll added tracts with zero counts:")
     for _, r in added_sorted.iterrows():

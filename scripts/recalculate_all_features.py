@@ -365,9 +365,9 @@ report(f"  Tracts with >0 libraries: {(out['Library_Count'] > 0).sum()}")
 
 
 # ============================================================
-# 10 & 11. Small_Business + Grocery_Store (spatial join using LAT/LON)
+# 10 & 11. Small_Business + Food_Access (spatial join using LAT/LON)
 # ============================================================
-report("\n--- Small_Business + Grocery_Store ---")
+report("\n--- Small_Business + Food_Access ---")
 biz_path = PROC / "Business_Licenses_20260415_with_tracts.csv"
 report("  Loading business licenses (large file, may take a moment)...")
 biz = pd.read_csv(
@@ -417,9 +417,9 @@ grocery_mask = biz_joined["LICENSE DESCRIPTION"].astype(str).str.contains(
     r"Retail Food Establishment|Produce Merchant", case=False, na=False, regex=True
 )
 grocery_counts = biz_joined.loc[grocery_mask, "census_tract"].value_counts()
-out["Grocery_Store"] = out["census_tract"].map(grocery_counts).fillna(0).astype(float)
-report(f"  Tracts with >0 grocery: {(out['Grocery_Store'] > 0).sum()}")
-report(f"  Total grocery licenses: {out['Grocery_Store'].sum():.0f}")
+out["Food_Access"] = out["census_tract"].map(grocery_counts).fillna(0).astype(float)
+report(f"  Tracts with >0 food access: {(out['Food_Access'] > 0).sum()}")
+report(f"  Total food access licenses: {out['Food_Access'].sum():.0f}")
 
 
 # ============================================================

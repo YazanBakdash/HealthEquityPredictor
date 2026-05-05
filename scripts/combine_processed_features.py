@@ -326,7 +326,7 @@ def main() -> None:
         regex=True,
     )
     grocery_counts = active.loc[grocery_mask, "CENSUS_TRACT"].value_counts()
-    out["Grocery_Store"] = out["census_tract"].map(grocery_counts).fillna(0).astype(float)
+    out["Food_Access"] = out["census_tract"].map(grocery_counts).fillna(0).astype(float)
 
     print(
         f"Business licenses: {len(biz):,} rows -> {len(active):,} active unique (account|site); "

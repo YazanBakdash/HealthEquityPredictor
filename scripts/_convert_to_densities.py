@@ -2,7 +2,7 @@
 Convert raw count/length features to densities:
 - By area (per sq mi): Parks, Bike_Miles, Wifi_Hotspots
 - By population (per 1,000 residents): Affordable_Housing, Transit_Stop,
-  School_Density, Library_Count, Small_Business, Grocery_Store
+  School_Density, Library_Count, Small_Business, Food_Access
 - Keep as-is: Tree_Canopy (already a percentage)
 """
 import pandas as pd
@@ -27,7 +27,7 @@ for f in ['inputs_processed/all_tract_features.csv', 'public/all_tract_features.
     df['School_Density'] = (df['School_Density'] / pop_k).round(4)
     df['Library_Count'] = (df['Library_Count'] / pop_k).round(4)
     df['Small_Business'] = (df['Small_Business'] / pop_k).round(4)
-    df['Grocery_Store'] = (df['Grocery_Store'] / pop_k).round(4)
+    df['Food_Access'] = (df['Food_Access'] / pop_k).round(4)
 
     df.to_csv(f, index=False)
 
@@ -37,7 +37,7 @@ for f in ['inputs_processed/all_tract_features.csv', 'public/all_tract_features.
     print(f"  Tracts with pop < {POP_FLOOR}: {tracts_floored}")
     for col in ['Tree_Canopy', 'Affordable_Housing', 'Parks', 'Transit_Stop',
                 'Bike_Miles', 'Wifi_Hotspots', 'School_Density', 'Library_Count',
-                'Small_Business', 'Grocery_Store']:
+                'Small_Business', 'Food_Access']:
         mn = df[col].min()
         mx = df[col].max()
         avg = df[col].mean()

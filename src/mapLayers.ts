@@ -15,7 +15,7 @@ export type MapLayerId =
   | 'School_Density'
   | 'Library_Count'
   | 'Small_Business'
-  | 'Grocery_Store';
+  | 'Food_Access';
 
 export type LayerMeta = {
   id: MapLayerId;
@@ -121,8 +121,8 @@ export const MAP_LAYER_ORDER: LayerMeta[] = [
     decimals: 1,
   },
   {
-    id: 'Grocery_Store',
-    label: 'Grocery access',
+    id: 'Food_Access',
+    label: 'Food access',
     subtitle: 'Retail food / grocery licenses per 1,000 residents',
     colorRamp: 'reds',
     unit: ' / 1k',

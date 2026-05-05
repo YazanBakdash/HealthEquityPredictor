@@ -71,7 +71,7 @@ print(f"GeoJSON: {len(chi_gdf)} features")
 
 # Summary of zeros
 feat_cols = ['Affordable_Housing','Parks','Transit_Stop','Bike_Miles',
-             'Wifi_Hotspots','School_Density','Library_Count','Small_Business','Grocery_Store']
+             'Wifi_Hotspots','School_Density','Library_Count','Small_Business','Food_Access']
 feat['_zeros'] = (feat[feat_cols] == 0).sum(axis=1)
 print(f"\nZero-count distribution (excl Tree_Canopy):")
 print(feat['_zeros'].value_counts().sort_index().to_string())

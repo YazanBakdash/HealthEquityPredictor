@@ -116,9 +116,9 @@ All spatial operations use **EPSG:3435** (Illinois State Plane East, feet) for a
 - **Method:** Business points are spatially joined to tract polygons using **point-in-polygon** (no buffer). Count per tract.
 - **Normalization:** Divided by (population / 1,000)
 
-### Grocery Store (`Grocery_Store`)
+### Food Access (`Food_Access`)
 
-- **Unit:** Grocery/retail food licenses per 1,000 residents
+- **Unit:** Retail food / grocery licenses per 1,000 residents
 - **Source:** Same as Small Business, filtered to licenses matching `Retail Food Establishment` or `Produce Merchant`
 - **Method:** Subset of the small business spatial join, filtered by license description. Count per tract.
 - **Normalization:** Divided by (population / 1,000)

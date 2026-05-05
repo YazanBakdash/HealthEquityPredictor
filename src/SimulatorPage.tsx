@@ -1,6 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { MarkerPoint } from './mapLayers'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Map as MapIcon,
   Activity,
@@ -14,6 +13,7 @@ import {
   TrendingUp,
   Info,
   User,
+  Save,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as d3 from 'd3';
@@ -24,11 +24,15 @@ import {
   MAP_LAYER_ORDER,
   layerMeta,
   parseTractFeaturesCsv,
+  type MarkerPoint,
   type LayerMeta,
   type MapLayerId,
 } from './mapLayers';
+import { useAuth } from './auth/AuthProvider';
+import { getSimulation, saveSimulation } from './simulations/simulationService';
 
 const CHICAGO_GEOJSON_URL = '/census_tracts.json';
+const POLICY_MODEL_VERSION = 'initial-policy-areas-v1';
 
 const ADJUSTABLE_LAYERS: Partial<Record<MapLayerId, { min: number; max: number; step: number; unit: string; label: string }>> = {
   Tree_Canopy:   { min: 0,  max: 100, step: 1,   unit: '%',        label: 'Tree Canopy Coverage' },
@@ -77,6 +81,10 @@ function formatLayerValue(layerId: MapLayerId, v: number): string {
 
 export default function SimulatorPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const { user } = useAuth();
+  const simulationId = searchParams.get('simulationId');
 
   const [currentAreaId, setCurrentAreaId] = useState<string | null>(null);
   const [parameterValues, setParameterValues] = useState<Record<string, number>>(() => {
@@ -116,6 +124,10 @@ export default function SimulatorPage() {
   const [layerAdjustments, setLayerAdjustments] = useState<Record<string, number>>({});
   const isAdjustableLayer = mapLayerId in ADJUSTABLE_LAYERS;
   const activeAdjustable = ADJUSTABLE_LAYERS[mapLayerId];
+  const [isSavingSimulation, setIsSavingSimulation] = useState(false);
+  const [isLoadingSavedSimulation, setIsLoadingSavedSimulation] = useState(false);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [simulationError, setSimulationError] = useState<string | null>(null);
 
   useEffect(() => {
     setIsLoadingMap(true);
@@ -239,10 +251,91 @@ export default function SimulatorPage() {
     () => (currentAdi != null ? currentAdi - ADI_NATIONAL_AVG : null),
     [currentAdi],
   );
+  const persistedOutcome = currentAdi ?? ADI_NATIONAL_AVG;
+  const persistedOutcomeDiff = currentAdiDiff ?? 0;
+
+  useEffect(() => {
+    if (!simulationId) return;
+
+    let isMounted = true;
+    setIsLoadingSavedSimulation(true);
+    setSimulationError(null);
+
+    getSimulation(simulationId)
+      .then((simulation) => {
+        if (!isMounted) return;
+        setParameterValues(simulation.parameterValues);
+        setTractOverrides(simulation.tractOverrides);
+        setSelectedTractId(simulation.selectedTractId);
+        setMapLayerId(simulation.mapLayerId);
+        setShowSatellite(simulation.showSatellite);
+        setBikeMiles(simulation.bikeMiles);
+        setMarkers(simulation.markers);
+        setLayerAdjustments(simulation.layerAdjustments);
+        setCurrentAreaId(null);
+        setSaveMessage(`Loaded "${simulation.title}".`);
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        setSimulationError(
+          err instanceof Error ? err.message : 'Failed to load saved simulation.',
+        );
+      })
+      .finally(() => {
+        if (isMounted) setIsLoadingSavedSimulation(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [simulationId]);
 
   const handleRunSimulation = () => {
     setIsSimulating(true);
     setTimeout(() => setIsSimulating(false), 1500);
+  };
+
+  const handleSaveSimulation = async () => {
+    setSaveMessage(null);
+    setSimulationError(null);
+
+    if (!user) {
+      const redirectTo = `${location.pathname}${location.search}`;
+      navigate(`/auth?redirectTo=${encodeURIComponent(redirectTo)}`);
+      return;
+    }
+
+    const defaultTitle = selectedTractId
+      ? `Tract ${selectedTractId} simulation`
+      : 'Citywide simulation';
+    const title = window.prompt('Name this simulation', defaultTitle);
+    if (title === null) return;
+
+    setIsSavingSimulation(true);
+
+    try {
+      const saved = await saveSimulation(user.id, {
+        title: title.trim() || defaultTitle,
+        parameterValues,
+        tractOverrides,
+        selectedTractId,
+        mapLayerId,
+        showSatellite,
+        bikeMiles,
+        markers,
+        layerAdjustments,
+        baseLifeExpectancy: ADI_NATIONAL_AVG,
+        predictedOutcome: persistedOutcome,
+        currentOutcome: persistedOutcome,
+        currentOutcomeDiff: persistedOutcomeDiff,
+        policyModelVersion: POLICY_MODEL_VERSION,
+      });
+      setSaveMessage(`Saved "${saved.title}".`);
+    } catch (err) {
+      setSimulationError(err instanceof Error ? err.message : 'Failed to save simulation.');
+    } finally {
+      setIsSavingSimulation(false);
+    }
   };
 
   const getIcon = (iconName: string) => {
@@ -284,14 +377,17 @@ export default function SimulatorPage() {
           Policy Intel Chicago
         </button>
         <div className="flex items-center gap-4">
-          <button className="text-sm font-semibold text-secondary hover:text-primary transition-colors flex items-center gap-1.5 mr-2">
+          <button
+            onClick={() => navigate('/my-simulations')}
+            className="text-sm font-semibold text-secondary hover:text-primary transition-colors flex items-center gap-1.5 mr-2"
+          >
             <History className="w-4 h-4" />
             My Simulations
           </button>
           <button
-            onClick={() => navigate('/auth')}
+            onClick={() => navigate(user ? '/profile' : '/auth')}
             className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center hover:bg-primary/20 transition-colors cursor-pointer"
-            title="Sign in"
+            title={user ? 'Profile' : 'Sign in'}
           >
             <User className="w-4 h-4 text-primary" />
           </button>
@@ -532,6 +628,23 @@ export default function SimulatorPage() {
               <h1 className="text-3xl font-extrabold tracking-tight text-primary">
                 F2025 Plan
               </h1>
+              {saveMessage && (
+                <p className="text-sm font-semibold text-primary mt-2">{saveMessage}</p>
+              )}
+              {simulationError && (
+                <p className="text-sm font-semibold text-error mt-2">{simulationError}</p>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={handleSaveSimulation}
+                disabled={isSavingSimulation || isLoadingSavedSimulation}
+                className="px-4 py-2.5 bg-primary text-white rounded-lg font-bold shadow-lg shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all flex items-center gap-2 text-sm disabled:opacity-60 disabled:hover:scale-100"
+              >
+                <Save className="w-4 h-4" />
+                {isSavingSimulation ? 'Saving...' : 'Save Simulation'}
+              </button>
             </div>
           </header>
 
@@ -735,7 +848,10 @@ export default function SimulatorPage() {
 
             {/* Simulation Overlay */}
             <AnimatePresence>
-              {(isSimulating || isLoadingMap || isLoadingFeatures) && (
+              {(isSimulating ||
+                isLoadingMap ||
+                isLoadingFeatures ||
+                isLoadingSavedSimulation) && (
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
@@ -754,7 +870,9 @@ export default function SimulatorPage() {
                         ? 'Initializing Geospatial Data...'
                         : isLoadingFeatures
                           ? 'Loading tract feature layers...'
-                          : 'Recalculating Geospatial Data...'}
+                          : isLoadingSavedSimulation
+                            ? 'Loading saved simulation...'
+                            : 'Recalculating Geospatial Data...'}
                     </span>
                   </div>
                 </motion.div>

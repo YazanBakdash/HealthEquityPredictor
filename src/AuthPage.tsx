@@ -1,19 +1,51 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Mail, Lock, User, Eye, EyeOff } from 'lucide-react';
 import { motion } from 'motion/react';
+import { useAuth } from './auth/AuthProvider';
 
 export default function AuthPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const { signIn, signUp, user } = useAuth();
   const [isLogin, setIsLogin] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const redirectTo = useMemo(
+    () => searchParams.get('redirectTo') || '/',
+    [searchParams],
+  );
+
+  useEffect(() => {
+    if (user) navigate(redirectTo, { replace: true });
+  }, [navigate, redirectTo, user]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    navigate('/simulator');
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    setIsSubmitting(true);
+
+    try {
+      if (isLogin) {
+        await signIn(email, password);
+        navigate(redirectTo, { replace: true });
+      } else {
+        await signUp(email, password, name);
+        setSuccessMessage('Account created. Check your email if confirmation is enabled.');
+        navigate(redirectTo, { replace: true });
+      }
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Authentication failed.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -137,6 +169,7 @@ export default function AuthPage() {
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder="Your full name"
+                    required={!isLogin}
                     className="w-full pl-10 pr-4 py-3 bg-white border border-outline-variant/30 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
                   />
                 </div>
@@ -154,6 +187,7 @@ export default function AuthPage() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="you@example.com"
+                    required
                   className="w-full pl-10 pr-4 py-3 bg-white border border-outline-variant/30 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
                 />
               </div>
@@ -170,6 +204,8 @@ export default function AuthPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
+                    required
+                    minLength={6}
                   className="w-full pl-10 pr-12 py-3 bg-white border border-outline-variant/30 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
                 />
                 <button
@@ -197,11 +233,24 @@ export default function AuthPage() {
               </div>
             )}
 
+            {errorMessage && (
+              <div className="rounded-lg border border-error/20 bg-error/5 px-4 py-3 text-sm font-semibold text-error">
+                {errorMessage}
+              </div>
+            )}
+
+            {successMessage && (
+              <div className="rounded-lg border border-success/20 bg-success/5 px-4 py-3 text-sm font-semibold text-primary">
+                {successMessage}
+              </div>
+            )}
+
             <button
               type="submit"
-              className="w-full py-3.5 bg-primary text-white rounded-lg font-bold shadow-lg shadow-primary/20 hover:shadow-xl hover:scale-[1.01] active:scale-[0.99] transition-all"
+              disabled={isSubmitting}
+              className="w-full py-3.5 bg-primary text-white rounded-lg font-bold shadow-lg shadow-primary/20 hover:shadow-xl hover:scale-[1.01] active:scale-[0.99] transition-all disabled:opacity-60 disabled:hover:scale-100"
             >
-              {isLogin ? 'Sign In' : 'Create Account'}
+              {isSubmitting ? 'Please wait...' : isLogin ? 'Sign In' : 'Create Account'}
             </button>
           </form>
 

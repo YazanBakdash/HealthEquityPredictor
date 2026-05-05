@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { INITIAL_POLICY_AREAS } from './constants';
+import { useAuth } from './auth/AuthProvider';
 
 const getIcon = (iconName: string, className = 'w-6 h-6') => {
   switch (iconName) {
@@ -27,6 +28,11 @@ const getIcon = (iconName: string, className = 'w-6 h-6') => {
 
 export default function LandingPage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const displayName =
+    typeof user?.user_metadata?.display_name === 'string'
+      ? user.user_metadata.display_name
+      : null;
 
   return (
     <div className="min-h-screen bg-surface">
@@ -42,9 +48,18 @@ export default function LandingPage() {
           >
             Simulator
           </button>
+          {user && (
+            <button
+              onClick={() => navigate('/my-simulations')}
+              className="text-sm font-semibold text-secondary hover:text-primary transition-colors hidden sm:block"
+            >
+              My Simulations
+            </button>
+          )}
           <button
-            onClick={() => navigate('/auth')}
+            onClick={() => navigate(user ? '/profile' : '/auth')}
             className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center hover:bg-primary/20 transition-colors cursor-pointer"
+            title={user ? 'Profile' : 'Sign in'}
           >
             <User className="w-4 h-4 text-primary" />
           </button>
@@ -89,6 +104,12 @@ export default function LandingPage() {
             Chicago&rsquo;s census tracts.
           </p>
 
+          {user && (
+            <p className="text-sm font-semibold text-primary mb-6">
+              Welcome back{displayName ? `, ${displayName}` : ''}. You are signed in.
+            </p>
+          )}
+
           <div className="flex items-center justify-center gap-4 flex-wrap">
             <button
               onClick={() => navigate('/simulator')}
@@ -97,12 +118,14 @@ export default function LandingPage() {
               Launch Simulator
               <ArrowRight className="w-4 h-4" />
             </button>
-            <button
-              onClick={() => navigate('/auth')}
-              className="px-8 py-3.5 bg-white text-primary border border-primary/20 rounded-xl font-bold hover:bg-primary/5 transition-all text-base"
-            >
-              Sign In
-            </button>
+            {user && (
+              <button
+                onClick={() => navigate('/my-simulations')}
+                className="px-8 py-3.5 bg-white text-primary border border-primary/20 rounded-xl font-bold hover:bg-primary/5 transition-all text-base"
+              >
+                My Simulations
+              </button>
+            )}
           </div>
         </motion.div>
 

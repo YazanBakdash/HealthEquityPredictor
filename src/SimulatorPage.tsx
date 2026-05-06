@@ -2,7 +2,6 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Activity,
-  Play,
   History,
   TrendingUp,
   User,
@@ -162,7 +161,6 @@ export default function SimulatorPage() {
     });
     return initial;
   });
-  const [isSimulating, setIsSimulating] = useState(false);
   const [geoData, setGeoData] = useState<any>(null);
   const [hoveredTract, setHoveredTract] = useState<any>(null);
   const [selectedTractId, setSelectedTractId] = useState<string | null>(null);
@@ -356,11 +354,6 @@ export default function SimulatorPage() {
     };
   }, [simulationId]);
 
-  const handleRunSimulation = () => {
-    setIsSimulating(true);
-    setTimeout(() => setIsSimulating(false), 1500);
-  };
-
   const handleSaveSimulation = async () => {
     setSaveMessage(null);
     setSimulationError(null);
@@ -496,66 +489,6 @@ export default function SimulatorPage() {
             </div>
           </div>
 
-          {/* Adjustable slider for current layer */}
-          {isAdjustableLayer && activeAdjustable && (
-            <div className="mt-auto pt-4 border-t border-outline-variant/20">
-              <div className="p-3 bg-white rounded-lg border border-outline-variant/20 shadow-sm">
-                <div className="flex justify-between mb-1">
-                  <label className="text-[10px] font-bold text-secondary uppercase tracking-wider">
-                    {activeAdjustable.label}
-                    {selectedTractId && (
-                      <span className="ml-1 text-primary normal-case font-normal">· 0.25mi</span>
-                    )}
-                  </label>
-                  <span className="text-xs font-bold text-primary">
-                    {(layerAdjustments[mapLayerId] ?? featureExtent?.[0] ?? 0).toFixed(
-                      activeAdjustable.step < 1 ? 1 : 0
-                    )}
-                    {activeAdjustable.unit}
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min={activeAdjustable.min}
-                  max={activeAdjustable.max}
-                  step={activeAdjustable.step}
-                  value={layerAdjustments[mapLayerId] ?? featureExtent?.[0] ?? activeAdjustable.min}
-                  onChange={(e) =>
-                    setLayerAdjustments(prev => ({
-                      ...prev,
-                      [mapLayerId]: parseFloat(e.target.value),
-                    }))
-                  }
-                  className="w-full h-1 bg-surface-container-high rounded-full appearance-none cursor-pointer accent-primary"
-                />
-                <div className="flex justify-between text-[9px] text-secondary mt-1">
-                  <span>{activeAdjustable.min}{activeAdjustable.unit}</span>
-                  <span>{activeAdjustable.max}{activeAdjustable.unit}</span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Run simulation */}
-          <div className={`${isAdjustableLayer ? 'mt-3' : 'mt-auto pt-4 border-t border-outline-variant/20'}`}>
-            <button
-              onClick={handleRunSimulation}
-              disabled={isSimulating}
-              className="w-full py-3 bg-primary text-white rounded-lg font-bold shadow-lg shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2 text-sm disabled:opacity-50 disabled:scale-100"
-            >
-              {isSimulating ? (
-                <motion.div
-                  animate={{ rotate: 360 }}
-                  transition={{ repeat: Infinity, duration: 1, ease: 'linear' }}
-                >
-                  <Activity className="w-4 h-4" />
-                </motion.div>
-              ) : (
-                <Play className="w-4 h-4 fill-current" />
-              )}
-              {isSimulating ? 'Processing...' : 'Run Simulation'}
-            </button>
-          </div>
         </aside>
 
         {/* Main Content */}
@@ -631,7 +564,7 @@ export default function SimulatorPage() {
             </div>
           )}
 
-          {/* Selected tract info */}
+          {/* Selected tract info + slider */}
           {selectedTractId && (
             <div className="bg-white rounded-xl p-4 border border-outline-variant/20 shadow-sm mb-4">
               <h3 className="text-[10px] font-bold text-secondary uppercase tracking-[0.15em] mb-2">
@@ -646,14 +579,52 @@ export default function SimulatorPage() {
                       {formatLayerValue('adi', tractFeatures.get(selectedTractId)!['adi'])}
                     </span>
                   </div>
-                  <div className="flex justify-between text-[11px]">
-                    <span className="text-secondary">{activeLayerMeta?.label ?? mapLayerId}</span>
-                    <span className="font-semibold text-on-surface">
-                      {formatLayerValue(mapLayerId, tractFeatures.get(selectedTractId)![mapLayerId])}
+                  {mapLayerId !== 'adi' && !isAdjustableLayer && (
+                    <div className="flex justify-between text-[11px]">
+                      <span className="text-secondary">{activeLayerMeta?.label ?? mapLayerId}</span>
+                      <span className="font-semibold text-on-surface">
+                        {formatLayerValue(mapLayerId, tractFeatures.get(selectedTractId)![mapLayerId])}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Adjustable slider — initialized to tract's actual value */}
+              {isAdjustableLayer && activeAdjustable && (
+                <div className="mt-4 pt-3 border-t border-outline-variant/20">
+                  <div className="flex justify-between mb-1">
+                    <label className="text-[10px] font-bold text-secondary uppercase tracking-wider">
+                      {activeAdjustable.label}
+                    </label>
+                    <span className="text-xs font-bold text-primary">
+                      {(layerAdjustments[mapLayerId] ?? tractFeatures?.get(selectedTractId)?.[mapLayerId] ?? 0).toFixed(
+                        activeAdjustable.step < 1 ? 1 : 0
+                      )}
+                      {activeAdjustable.unit}
                     </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={activeAdjustable.min}
+                    max={activeAdjustable.max}
+                    step={activeAdjustable.step}
+                    value={layerAdjustments[mapLayerId] ?? tractFeatures?.get(selectedTractId)?.[mapLayerId] ?? activeAdjustable.min}
+                    onChange={(e) =>
+                      setLayerAdjustments(prev => ({
+                        ...prev,
+                        [mapLayerId]: parseFloat(e.target.value),
+                      }))
+                    }
+                    className="w-full h-1 bg-surface-container-high rounded-full appearance-none cursor-pointer accent-primary"
+                  />
+                  <div className="flex justify-between text-[9px] text-secondary mt-1">
+                    <span>{activeAdjustable.min}{activeAdjustable.unit}</span>
+                    <span>{activeAdjustable.max}{activeAdjustable.unit}</span>
                   </div>
                 </div>
               )}
+
               <button
                 onClick={() => setSelectedTractId(null)}
                 className="mt-3 text-[10px] font-bold text-secondary hover:text-primary underline"
@@ -856,10 +827,9 @@ export default function SimulatorPage() {
               </div>
             </div>
 
-            {/* Simulation Overlay */}
+            {/* Loading Overlay */}
             <AnimatePresence>
-              {(isSimulating ||
-                isLoadingMap ||
+              {(isLoadingMap ||
                 isLoadingFeatures ||
                 isLoadingSavedSimulation) && (
                 <motion.div
@@ -880,9 +850,7 @@ export default function SimulatorPage() {
                         ? 'Initializing Geospatial Data...'
                         : isLoadingFeatures
                           ? 'Loading tract feature layers...'
-                          : isLoadingSavedSimulation
-                            ? 'Loading saved simulation...'
-                            : 'Recalculating Geospatial Data...'}
+                          : 'Loading saved simulation...'}
                     </span>
                   </div>
                 </motion.div>

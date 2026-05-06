@@ -240,6 +240,60 @@ export default function SimulatorPage() {
       });
   }, []);
 
+// Seed existing school/library markers from baseline CSV
+useEffect(() => {
+  if (!tractFeatures || !geoData) return;
+
+  const existingMarkers: MarkerPoint[] = [];
+
+  geoData.features.forEach((feature: any) => {
+    const tractId = tractIdFromProps(feature?.properties ?? {});
+    const row = tractFeatures.get(tractId);
+    if (!row) return;
+
+    const geom = feature.geometry;
+    const ring =
+      geom?.type === 'Polygon'
+        ? geom.coordinates[0]
+        : geom?.type === 'MultiPolygon'
+        ? geom.coordinates[0][0]
+        : null;
+    if (!ring) return;
+
+    const lons = ring.map((c: number[]) => c[0]);
+    const lats = ring.map((c: number[]) => c[1]);
+    const cLon = lons.reduce((a: number, b: number) => a + b, 0) / lons.length;
+    const cLat = lats.reduce((a: number, b: number) => a + b, 0) / lats.length;
+
+    const schoolCount = Math.round(Math.min(row['School_Density'] ?? 0, 6));
+    for (let i = 0; i < schoolCount; i++) {
+      existingMarkers.push({
+        id: `existing-school-${tractId}-${i}`,
+        lat: cLat + (Math.random() - 0.5) * 0.004,
+        lon: cLon + (Math.random() - 0.5) * 0.004,
+        type: 'school',
+        existing: true,
+      });
+    }
+
+    const libCount = Math.round(Math.min(row['Library_Count'] ?? 0, 3));
+    for (let i = 0; i < libCount; i++) {
+      existingMarkers.push({
+        id: `existing-library-${tractId}-${i}`,
+        lat: cLat + (Math.random() - 0.5) * 0.004,
+        lon: cLon + (Math.random() - 0.5) * 0.004,
+        type: 'library',
+        existing: true,
+      });
+    }
+  });
+
+  setMarkers((prev) => [
+    ...existingMarkers,
+    ...prev.filter((m) => !m.existing), // keep any user-added markers
+  ]);
+}, [tractFeatures, geoData]);
+
   // If simulationId present, load existing simulation features to overlay
   useEffect(() => {
     if (!simulationId) return;
@@ -872,7 +926,7 @@ export default function SimulatorPage() {
                       type="button"
                       onClick={() => {
                         const ft = isSchoolLayer ? 'school' : 'library';
-                        setMarkers((m) => m.filter((p) => p.type !== ft));
+                        setMarkers((m) => m.filter((p) => p.type !== ft || p.existing));
                         setGeometryItems((prev) => {
                           const next = prev.filter((g) => g.feature_type !== ft);
                           void triggerRecalculate(next, snapshotSliderOverrides());

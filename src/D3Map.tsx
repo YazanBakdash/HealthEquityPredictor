@@ -537,67 +537,68 @@ const D3Map = forwardRef<D3MapHandle, D3MapProps>(function D3Map(
             );
           })()}
 
-          {markers.map(marker => (
-            <g
-              key={marker.id}
-              transform={`translate(${marker.x}, ${marker.y})`}
-              className="cursor-pointer"
-              onClick={(e) => {
-                e.stopPropagation();
-                setMarkers(markers.filter(m => m.id !== marker.id));
-              }}
-            >
-              {marker.type === 'school' ? (
-                <>
-                  <rect
-                    x={-10 / transform.k}
-                    y={-10 / transform.k}
-                    width={20 / transform.k}
-                    height={20 / transform.k}
-                    rx={3 / transform.k}
-                    fill="#3B82F6"
-                    stroke="white"
-                    strokeWidth={1.5 / transform.k}
-                  />
-                  <text
-                    x={0}
-                    y={1 / transform.k}
-                    textAnchor="middle"
-                    dominantBaseline="middle"
-                    fill="white"
-                    fontSize={11 / transform.k}
-                    fontWeight="bold"
-                  >
-                    S
-                  </text>
-                </>
-              ) : (
-                <>
-                  <rect
-                    x={-10 / transform.k}
-                    y={-10 / transform.k}
-                    width={20 / transform.k}
-                    height={20 / transform.k}
-                    rx={3 / transform.k}
-                    fill="#7C3AED"
-                    stroke="white"
-                    strokeWidth={1.5 / transform.k}
-                  />
-                  <text
-                    x={0}
-                    y={1 / transform.k}
-                    textAnchor="middle"
-                    dominantBaseline="middle"
-                    fill="white"
-                    fontSize={11 / transform.k}
-                    fontWeight="bold"
-                  >
-                    L
-                  </text>
-                </>
-              )}
-            </g>
-          ))}  
+          {markers.map(marker => {
+            // For existing markers, project lat/lon → SVG coords at render time
+            const svgPos = marker.existing
+              ? projection([marker.lon, marker.lat])
+              : [marker.x, marker.y];
+            if (!svgPos) return null;
+            const [mx, my] = svgPos;
+
+            const size = marker.existing ? 7 / transform.k : 10 / transform.k;
+            const opacity = marker.existing ? 0.45 : 1;
+
+            return (
+              <g
+                key={marker.id}
+                transform={`translate(${mx}, ${my})`}
+                style={{ opacity }}
+                className={marker.existing ? 'pointer-events-none' : 'cursor-pointer'}
+                onClick={marker.existing ? undefined : (e) => {
+                  e.stopPropagation();
+                  setMarkers(markers.filter(m => m.id !== marker.id));
+                }}
+              >
+                {marker.type === 'school' ? (
+                  <>
+                    <rect
+                      x={-size} y={-size}
+                      width={size * 2} height={size * 2}
+                      rx={3 / transform.k}
+                      fill="#3B82F6"
+                      stroke="white"
+                      strokeWidth={1.5 / transform.k}
+                    />
+                    <text
+                      x={0} y={1 / transform.k}
+                      textAnchor="middle" dominantBaseline="middle"
+                      fill="white" fontSize={size * 1.1} fontWeight="bold"
+                    >
+                      S
+                    </text>
+                  </>
+                ) : (
+                  <>
+                    <rect
+                      x={-size} y={-size}
+                      width={size * 2} height={size * 2}
+                      rx={3 / transform.k}
+                      fill="#7C3AED"
+                      stroke="white"
+                      strokeWidth={1.5 / transform.k}
+                    />
+                    <text
+                      x={0} y={1 / transform.k}
+                      textAnchor="middle" dominantBaseline="middle"
+                      fill="white" fontSize={size * 1.1} fontWeight="bold"
+                    >
+                      L
+                    </text>
+                  </>
+                )}
+              </g>
+            );
+          })}  
         </g>
       </g>
     </svg>

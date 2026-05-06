@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, ExternalLink, History, Trash2 } from 'lucide-react';
+import { ArrowLeft, ExternalLink, History, Plus, Trash2 } from 'lucide-react';
 import { useAuth } from './auth/AuthProvider';
 import {
+  createSimulation,
   deleteSimulation,
   listSimulations,
 } from './simulations/simulationService';
-import type { SavedSimulation } from './simulations/simulationTypes';
+import type { Simulation } from './simulations/simulationTypes';
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat(undefined, {
@@ -21,10 +22,11 @@ function formatDate(value: string) {
 export default function MySimulationsPage() {
   const navigate = useNavigate();
   const { signOut, user } = useAuth();
-  const [simulations, setSimulations] = useState<SavedSimulation[]>([]);
+  const [simulations, setSimulations] = useState<Simulation[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [isCreating, setIsCreating] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -52,6 +54,28 @@ export default function MySimulationsPage() {
     () => user?.user_metadata?.display_name || user?.email || 'Signed in',
     [user],
   );
+
+  const handleNewSimulation = async () => {
+    if (!user) {
+      navigate('/auth');
+      return;
+    }
+
+    const name = window.prompt('Name your new simulation', 'Untitled simulation');
+    if (name === null) return;
+
+    setIsCreating(true);
+    setErrorMessage(null);
+
+    try {
+      const sim = await createSimulation(user.id, name.trim() || 'Untitled simulation');
+      navigate(`/simulator?simulationId=${sim.id}`);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to create simulation.');
+    } finally {
+      setIsCreating(false);
+    }
+  };
 
   const handleDelete = async (id: string) => {
     const confirmed = window.confirm('Delete this saved simulation?');
@@ -84,7 +108,7 @@ export default function MySimulationsPage() {
             {accountLabel}
           </span>
           <button
-            onClick={() => navigate('/simulator')}
+            onClick={() => navigate('/my-simulations')}
             className="text-sm font-semibold text-secondary hover:text-primary transition-colors"
           >
             Simulator
@@ -100,11 +124,11 @@ export default function MySimulationsPage() {
 
       <main className="mx-auto max-w-5xl px-6 pt-28 pb-16">
         <button
-          onClick={() => navigate('/simulator')}
+          onClick={() => navigate('/')}
           className="flex items-center gap-2 text-sm font-semibold text-secondary hover:text-primary transition-colors mb-8"
         >
           <ArrowLeft className="w-4 h-4" />
-          Back to Simulator
+          Back to home
         </button>
 
         <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-8">
@@ -117,9 +141,18 @@ export default function MySimulationsPage() {
               My Simulations
             </h1>
             <p className="text-secondary mt-2">
-              Review saved simulator snapshots and reopen them on the map.
+              Create new simulations or reopen existing ones on the map.
             </p>
           </div>
+
+          <button
+            onClick={handleNewSimulation}
+            disabled={isCreating}
+            className="shrink-0 inline-flex items-center gap-2 px-5 py-3 bg-primary text-white rounded-lg font-bold hover:opacity-90 transition-opacity disabled:opacity-60"
+          >
+            <Plus className="w-4 h-4" />
+            {isCreating ? 'Creating...' : 'New Simulation'}
+          </button>
         </div>
 
         {errorMessage && (
@@ -134,98 +167,56 @@ export default function MySimulationsPage() {
           </div>
         ) : simulations.length === 0 ? (
           <div className="bg-white rounded-xl border border-outline-variant/20 p-10 text-center">
-            <h2 className="text-xl font-bold text-primary mb-2">No saved simulations yet</h2>
+            <h2 className="text-xl font-bold text-primary mb-2">No simulations yet</h2>
             <p className="text-secondary mb-6">
-              Adjust policy sliders in the simulator, then save your first snapshot.
+              Create your first simulation to start exploring equity scenarios.
             </p>
             <button
-              onClick={() => navigate('/simulator')}
-              className="px-5 py-3 bg-primary text-white rounded-lg font-bold hover:opacity-90 transition-opacity"
+              onClick={handleNewSimulation}
+              disabled={isCreating}
+              className="px-5 py-3 bg-primary text-white rounded-lg font-bold hover:opacity-90 transition-opacity disabled:opacity-60"
             >
-              Launch Simulator
+              <Plus className="w-4 h-4 inline mr-2" />
+              New Simulation
             </button>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            {simulations.map((simulation) => {
-              const overrideCount = Object.values(
-                simulation.tractOverrides as Record<string, Record<string, number>>,
-              ).reduce((sum, values) => sum + Object.keys(values).length, 0);
-              const parameterCount = Object.keys(simulation.parameterValues).length;
-
-              return (
-                <article
-                  key={simulation.id}
-                  className="bg-white rounded-xl border border-outline-variant/20 p-6 shadow-sm hover:shadow-md transition-shadow"
-                >
-                  <div className="flex items-start justify-between gap-4 mb-4">
-                    <div>
-                      <h2 className="text-xl font-bold text-primary font-headline">
-                        {simulation.title}
-                      </h2>
-                      <p className="text-xs font-semibold text-secondary mt-1">
-                        Saved {formatDate(simulation.updatedAt)}
-                      </p>
-                    </div>
-                    <span className="shrink-0 rounded-full bg-primary/5 px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-primary">
-                      {simulation.selectedTractId
-                        ? `Tract ${simulation.selectedTractId}`
-                        : 'Citywide'}
-                    </span>
+            {simulations.map((simulation) => (
+              <article
+                key={simulation.id}
+                className="bg-white rounded-xl border border-outline-variant/20 p-6 shadow-sm hover:shadow-md transition-shadow"
+              >
+                <div className="flex items-start justify-between gap-4 mb-4">
+                  <div>
+                    <h2 className="text-xl font-bold text-primary font-headline">
+                      {simulation.name}
+                    </h2>
+                    <p className="text-xs font-semibold text-secondary mt-1">
+                      Created {formatDate(simulation.createdAt)}
+                    </p>
                   </div>
+                </div>
 
-                  <div className="grid grid-cols-3 gap-3 mb-5">
-                    <div className="rounded-lg bg-surface-container-low p-3">
-                      <div className="text-[10px] font-bold uppercase text-secondary mb-1">
-                        Outcome
-                      </div>
-                      <div className="text-lg font-extrabold text-primary">
-                        {simulation.currentOutcome.toFixed(1)}
-                      </div>
-                    </div>
-                    <div className="rounded-lg bg-surface-container-low p-3">
-                      <div className="text-[10px] font-bold uppercase text-secondary mb-1">
-                        Change
-                      </div>
-                      <div
-                        className={`text-lg font-extrabold ${
-                          simulation.currentOutcomeDiff >= 0 ? 'text-success' : 'text-error'
-                        }`}
-                      >
-                        {simulation.currentOutcomeDiff >= 0 ? '+' : ''}
-                        {simulation.currentOutcomeDiff.toFixed(2)}
-                      </div>
-                    </div>
-                    <div className="rounded-lg bg-surface-container-low p-3">
-                      <div className="text-[10px] font-bold uppercase text-secondary mb-1">
-                        Inputs
-                      </div>
-                      <div className="text-lg font-extrabold text-primary">
-                        {parameterCount + overrideCount}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={() => navigate(`/simulator?simulationId=${simulation.id}`)}
-                      className="flex-1 py-2.5 bg-primary text-white rounded-lg font-bold hover:opacity-90 transition-opacity inline-flex items-center justify-center gap-2"
-                    >
-                      <ExternalLink className="w-4 h-4" />
-                      Open
-                    </button>
-                    <button
-                      onClick={() => handleDelete(simulation.id)}
-                      disabled={deletingId === simulation.id}
-                      className="p-2.5 rounded-lg border border-outline-variant/30 text-secondary hover:text-error hover:border-error/30 transition-colors disabled:opacity-50"
-                      title="Delete simulation"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                </article>
-              );
-            })}
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => navigate(`/simulator?simulationId=${simulation.id}`)}
+                    className="flex-1 py-2.5 bg-primary text-white rounded-lg font-bold hover:opacity-90 transition-opacity inline-flex items-center justify-center gap-2"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                    Open
+                  </button>
+                  <button
+                    onClick={() => handleDelete(simulation.id)}
+                    disabled={deletingId === simulation.id}
+                    className="p-2.5 rounded-lg border border-outline-variant/30 text-secondary hover:text-error hover:border-error/30 transition-colors disabled:opacity-50"
+                    title="Delete simulation"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </article>
+            ))}
           </div>
         )}
       </main>

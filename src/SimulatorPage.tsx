@@ -1,5 +1,5 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Activity,
   History,
@@ -9,8 +9,8 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as d3 from 'd3';
-import { INITIAL_POLICY_AREAS } from './constants';
 import D3Map, { EXCLUDED_TRACTS, tractIdFromProps } from './D3Map';
+import { normalizeTractId } from './tractId';
 import {
   ALL_TRACT_FEATURES_CSV_URL,
   MAP_LAYER_ORDER,
@@ -21,10 +21,14 @@ import {
   type MapLayerId,
 } from './mapLayers';
 import { useAuth } from './auth/AuthProvider';
-import { getSimulation, saveSimulation } from './simulations/simulationService';
+import {
+  getSimulationFeatures,
+  getSimulationGeometry,
+  recalculate,
+} from './simulations/simulationService';
+import type { GeometryInput, SimulationFeatureRow } from './simulations/simulationTypes';
 
 const CHICAGO_GEOJSON_URL = '/census_tracts.json';
-const POLICY_MODEL_VERSION = 'initial-policy-areas-v1';
 
 const ADJUSTABLE_LAYERS: Partial<Record<MapLayerId, { min: number; max: number; step: number; unit: string; label: string }>> = {
   Affordable_Housing: { min: 0, max: 50, step: 0.5, unit: ' / 1k', label: 'Affordable Housing' },
@@ -52,7 +56,6 @@ function interpolatorFromRamp(ramp: LayerMeta['colorRamp']) {
       return d3.interpolateReds;
     case 'greens':
       return d3.interpolateGreens;
-    
     case 'greys':
       return d3.interpolateGreys;
     case 'teal':
@@ -94,6 +97,7 @@ function FeatureHistogram({
     const counts = new Array(NUM_BINS).fill(0);
     let selIdx = -1;
 
+    const selNorm = selectedTractId ? normalizeTractId(selectedTractId) : null;
     tractFeatures.forEach((row, tractId) => {
       const v = row[layerId];
       if (typeof v !== 'number' || !Number.isFinite(v)) return;
@@ -101,7 +105,7 @@ function FeatureHistogram({
       if (idx >= NUM_BINS) idx = NUM_BINS - 1;
       if (idx < 0) idx = 0;
       counts[idx]++;
-      if (tractId === selectedTractId) selIdx = idx;
+      if (selNorm != null && normalizeTractId(tractId) === selNorm) selIdx = idx;
     });
 
     return {
@@ -146,38 +150,21 @@ function FeatureHistogram({
 
 export default function SimulatorPage() {
   const navigate = useNavigate();
-  const location = useLocation();
   const [searchParams] = useSearchParams();
   const { user } = useAuth();
   const simulationId = searchParams.get('simulationId');
 
-  const [currentAreaId, setCurrentAreaId] = useState<string | null>(null);
-  const [parameterValues, setParameterValues] = useState<Record<string, number>>(() => {
-    const initial: Record<string, number> = {};
-    INITIAL_POLICY_AREAS.forEach((area) => {
-      area.parameters.forEach((p) => {
-        initial[p.id] = p.value;
-      });
-    });
-    return initial;
-  });
   const [geoData, setGeoData] = useState<any>(null);
   const [hoveredTract, setHoveredTract] = useState<any>(null);
   const [selectedTractId, setSelectedTractId] = useState<string | null>(null);
-  const [tractOverrides, setTractOverrides] = useState<
-    Record<string, Record<string, number>>
-  >({});
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [isLoadingMap, setIsLoadingMap] = useState(true);
   const [mapLayerId, setMapLayerId] = useState<MapLayerId>('adi');
   const [showSatellite, setShowSatellite] = useState(false);
-  const [tractFeatures, setTractFeatures] = useState<Map<
-    string,
-    Record<string, number>
-  > | null>(null);
+  const [tractFeatures, setTractFeatures] = useState<Map<string, Record<string, number>> | null>(null);
   const [isLoadingFeatures, setIsLoadingFeatures] = useState(true);
   const [bikeMiles, setBikeMiles] = useState<{x: number, y: number}[]>([]);
-  const isBikeMilesLayer = mapLayerId === 'Bike_Miles'; 
+  const isBikeMilesLayer = mapLayerId === 'Bike_Miles';
   const [isDrawingMode, setIsDrawingMode] = useState(false);
 
   const [markers, setMarkers] = useState<MarkerPoint[]>([]);
@@ -188,11 +175,26 @@ export default function SimulatorPage() {
   const [layerAdjustments, setLayerAdjustments] = useState<Record<string, number>>({});
   const isAdjustableLayer = mapLayerId in ADJUSTABLE_LAYERS;
   const activeAdjustable = ADJUSTABLE_LAYERS[mapLayerId];
-  const [isSavingSimulation, setIsSavingSimulation] = useState(false);
-  const [isLoadingSavedSimulation, setIsLoadingSavedSimulation] = useState(false);
-  const [saveMessage, setSaveMessage] = useState<string | null>(null);
-  const [simulationError, setSimulationError] = useState<string | null>(null);
 
+  const [isRecalculating, setIsRecalculating] = useState(false);
+  const [recalcError, setRecalcError] = useState<string | null>(null);
+
+  // Geometry items accumulated for the current simulation (in lat/lon)
+  const [geometryItems, setGeometryItems] = useState<GeometryInput[]>([]);
+
+  const selectedTractIdRef = useRef<string | null>(selectedTractId);
+  const layerAdjustmentsRef = useRef(layerAdjustments);
+  selectedTractIdRef.current = selectedTractId;
+  layerAdjustmentsRef.current = layerAdjustments;
+
+  const snapshotSliderOverrides = useCallback((): Record<string, Record<string, number>> => {
+    const tid = selectedTractIdRef.current;
+    const adj = layerAdjustmentsRef.current;
+    if (!tid || Object.keys(adj).length === 0) return {};
+    return { [tid]: { ...adj } };
+  }, []);
+
+  // Load GeoJSON tract boundaries
   useEffect(() => {
     setIsLoadingMap(true);
     fetch(CHICAGO_GEOJSON_URL)
@@ -219,6 +221,7 @@ export default function SimulatorPage() {
       });
   }, []);
 
+  // Load baseline tract features CSV
   useEffect(() => {
     setIsLoadingFeatures(true);
     fetch(ALL_TRACT_FEATURES_CSV_URL)
@@ -236,6 +239,138 @@ export default function SimulatorPage() {
         setIsLoadingFeatures(false);
       });
   }, []);
+
+  // If simulationId present, load existing simulation features to overlay
+  useEffect(() => {
+    if (!simulationId) return;
+    let isMounted = true;
+
+    (async () => {
+      try {
+        const [features, geoRows] = await Promise.all([
+          getSimulationFeatures(simulationId),
+          getSimulationGeometry(simulationId),
+        ]);
+
+        if (!isMounted) return;
+
+        if (features.length > 0) {
+          applySimulationFeatures(features);
+        }
+
+        const items: GeometryInput[] = geoRows.map((g) => ({
+          feature_type: g.featureType,
+          lat: g.lat ?? undefined,
+          lon: g.lon ?? undefined,
+          geometry: g.geometry ?? undefined,
+        }));
+        setGeometryItems(items);
+      } catch (err) {
+        if (isMounted) {
+          setRecalcError(err instanceof Error ? err.message : 'Failed to load simulation data.');
+        }
+      }
+    })();
+
+    return () => { isMounted = false; };
+  }, [simulationId]);
+
+  // Apply simulation_features rows to the tractFeatures map
+  const applySimulationFeatures = useCallback((rows: SimulationFeatureRow[]) => {
+    setTractFeatures((prev) => {
+      if (!prev) return prev;
+      const next = new Map(prev);
+      for (const row of rows) {
+        const existing = next.get(row.census_tract) ?? {};
+        const updated: Record<string, number> = { ...existing };
+        if (row.tree_canopy != null) updated['Tree_Canopy'] = row.tree_canopy;
+        if (row.affordable_housing != null) updated['Affordable_Housing'] = row.affordable_housing;
+        if (row.parks != null) updated['Parks'] = row.parks;
+        if (row.transit_stop != null) updated['Transit_Stop'] = row.transit_stop;
+        if (row.bike_miles != null) updated['Bike_Miles'] = row.bike_miles;
+        if (row.wifi_hotspots != null) updated['Wifi_Hotspots'] = row.wifi_hotspots;
+        if (row.school_density != null) updated['School_Density'] = row.school_density;
+        if (row.library_count != null) updated['Library_Count'] = row.library_count;
+        if (row.small_business != null) updated['Small_Business'] = row.small_business;
+        if (row.food_access != null) updated['Food_Access'] = row.food_access;
+        if (row.predicted_adi != null) updated['adi'] = row.predicted_adi;
+        next.set(normalizeTractId(row.census_tract), updated);
+      }
+      return next;
+    });
+  }, []);
+
+  // Trigger recalculation via Flask API
+  const triggerRecalculate = useCallback(async (
+    geoItems: GeometryInput[],
+    sliderOverrides: Record<string, Record<string, number>>,
+  ) => {
+    if (!simulationId) {
+      setRecalcError('No simulation selected. Create one from My Simulations first.');
+      return;
+    }
+
+    setIsRecalculating(true);
+    setRecalcError(null);
+
+    try {
+      const features = await recalculate(simulationId, geoItems, sliderOverrides);
+      applySimulationFeatures(features);
+    } catch (err) {
+      setRecalcError(err instanceof Error ? err.message : 'Recalculation failed.');
+    } finally {
+      setIsRecalculating(false);
+    }
+  }, [simulationId, applySimulationFeatures]);
+
+  // Callback: marker placed on map (already in lat/lon from D3Map)
+  const handleMarkerPlaced = useCallback((lat: number, lon: number, type: 'school' | 'library') => {
+    setGeometryItems((prev) => {
+      const newItem: GeometryInput = { feature_type: type, lat, lon };
+      const updated = [...prev, newItem];
+      void triggerRecalculate(updated, snapshotSliderOverrides());
+      return updated;
+    });
+  }, [triggerRecalculate, snapshotSliderOverrides]);
+
+  // Callback: bike trail drawn (coordinates in [lon, lat] format)
+  const handleBikeTrailDrawn = useCallback((coordinates: [number, number][]) => {
+    setGeometryItems((prev) => {
+      const newItem: GeometryInput = {
+        feature_type: 'bike_trail',
+        geometry: { type: 'LineString', coordinates },
+      };
+      const updated = [...prev, newItem];
+      void triggerRecalculate(updated, snapshotSliderOverrides());
+      return updated;
+    });
+  }, [triggerRecalculate, snapshotSliderOverrides]);
+
+  // When slider changes, trigger recalculate after a debounce
+  const sliderTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => {
+    if (!selectedTractId || Object.keys(layerAdjustments).length === 0) return;
+    if (!simulationId) return;
+
+    if (sliderTimerRef.current) clearTimeout(sliderTimerRef.current);
+    sliderTimerRef.current = setTimeout(() => {
+      triggerRecalculate(geometryItems, snapshotSliderOverrides());
+    }, 800);
+
+    return () => { if (sliderTimerRef.current) clearTimeout(sliderTimerRef.current); };
+  }, [
+    layerAdjustments,
+    selectedTractId,
+    simulationId,
+    geometryItems,
+    triggerRecalculate,
+    snapshotSliderOverrides,
+  ]);
+
+  // Overrides apply to the selected tract only — clear when selection changes.
+  useEffect(() => {
+    setLayerAdjustments({});
+  }, [selectedTractId]);
 
   const activeLayerMeta = useMemo(() => layerMeta(mapLayerId), [mapLayerId]);
 
@@ -255,6 +390,18 @@ export default function SimulatorPage() {
     return [lo, hi];
   }, [mapLayerId, tractFeatures]);
 
+  /** City-wide mean for the active adjustable layer (legend text only). */
+  const adjustableLayerCityMean = useMemo(() => {
+    if (!tractFeatures || !isAdjustableLayer) return null;
+    const vals: number[] = [];
+    tractFeatures.forEach((row) => {
+      const v = row[mapLayerId];
+      if (typeof v === 'number' && Number.isFinite(v)) vals.push(v);
+    });
+    const mean = d3.mean(vals);
+    return mean != null && Number.isFinite(mean) ? mean : null;
+  }, [tractFeatures, isAdjustableLayer, mapLayerId]);
+
   const featureColorScale = useMemo(() => {
     if (!featureExtent || !activeLayerMeta) return null;
     const interp = interpolatorFromRamp(activeLayerMeta.colorRamp);
@@ -273,26 +420,10 @@ export default function SimulatorPage() {
     };
   }, [featureColorScale, mapLayerId, tractFeatures]);
 
-  const currentArea = useMemo(
-    () => INITIAL_POLICY_AREAS.find((a) => a.id === currentAreaId) || null,
-    [currentAreaId],
-  );
-
-  const handleParamChange = (id: string, value: number) => {
-    if (selectedTractId) {
-      setTractOverrides((prev) => ({
-        ...prev,
-        [selectedTractId]: { ...(prev[selectedTractId] || {}), [id]: value },
-      }));
-    } else {
-      setParameterValues((prev) => ({ ...prev, [id]: value }));
-    }
-  };
-
   const ADI_NATIONAL_AVG = 100;
 
   const getTractAdi = (tractId: string): number | null => {
-    const v = tractFeatures?.get(tractId)?.['adi'];
+    const v = tractFeatures?.get(normalizeTractId(tractId))?.['adi'];
     return typeof v === 'number' && Number.isFinite(v) ? v : null;
   };
 
@@ -315,87 +446,6 @@ export default function SimulatorPage() {
     () => (currentAdi != null ? currentAdi - ADI_NATIONAL_AVG : null),
     [currentAdi],
   );
-  const persistedOutcome = currentAdi ?? ADI_NATIONAL_AVG;
-  const persistedOutcomeDiff = currentAdiDiff ?? 0;
-
-  useEffect(() => {
-    if (!simulationId) return;
-
-    let isMounted = true;
-    setIsLoadingSavedSimulation(true);
-    setSimulationError(null);
-
-    getSimulation(simulationId)
-      .then((simulation) => {
-        if (!isMounted) return;
-        setParameterValues(simulation.parameterValues);
-        setTractOverrides(simulation.tractOverrides);
-        setSelectedTractId(simulation.selectedTractId);
-        setMapLayerId(simulation.mapLayerId);
-        setShowSatellite(simulation.showSatellite);
-        setBikeMiles(simulation.bikeMiles);
-        setMarkers(simulation.markers);
-        setLayerAdjustments(simulation.layerAdjustments);
-        setCurrentAreaId(null);
-        setSaveMessage(`Loaded "${simulation.title}".`);
-      })
-      .catch((err) => {
-        if (!isMounted) return;
-        setSimulationError(
-          err instanceof Error ? err.message : 'Failed to load saved simulation.',
-        );
-      })
-      .finally(() => {
-        if (isMounted) setIsLoadingSavedSimulation(false);
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [simulationId]);
-
-  const handleSaveSimulation = async () => {
-    setSaveMessage(null);
-    setSimulationError(null);
-
-    if (!user) {
-      const redirectTo = `${location.pathname}${location.search}`;
-      navigate(`/auth?redirectTo=${encodeURIComponent(redirectTo)}`);
-      return;
-    }
-
-    const defaultTitle = selectedTractId
-      ? `Tract ${selectedTractId} simulation`
-      : 'Citywide simulation';
-    const title = window.prompt('Name this simulation', defaultTitle);
-    if (title === null) return;
-
-    setIsSavingSimulation(true);
-
-    try {
-      const saved = await saveSimulation(user.id, {
-        title: title.trim() || defaultTitle,
-        parameterValues,
-        tractOverrides,
-        selectedTractId,
-        mapLayerId,
-        showSatellite,
-        bikeMiles,
-        markers,
-        layerAdjustments,
-        baseLifeExpectancy: ADI_NATIONAL_AVG,
-        predictedOutcome: persistedOutcome,
-        currentOutcome: persistedOutcome,
-        currentOutcomeDiff: persistedOutcomeDiff,
-        policyModelVersion: POLICY_MODEL_VERSION,
-      });
-      setSaveMessage(`Saved "${saved.title}".`);
-    } catch (err) {
-      setSimulationError(err instanceof Error ? err.message : 'Failed to save simulation.');
-    } finally {
-      setIsSavingSimulation(false);
-    }
-  };
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
@@ -413,6 +463,22 @@ export default function SimulatorPage() {
     observer.observe(containerRef.current);
     return () => observer.disconnect();
   }, []);
+
+  // Redirect to My Simulations if no simulationId
+  if (!simulationId && !isLoadingMap) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-surface gap-6">
+        <h1 className="text-2xl font-bold text-primary">No simulation selected</h1>
+        <p className="text-secondary">Create or open a simulation from the My Simulations page.</p>
+        <button
+          onClick={() => navigate('/my-simulations')}
+          className="px-5 py-3 bg-primary text-white rounded-lg font-bold hover:opacity-90 transition-opacity"
+        >
+          Go to My Simulations
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -443,7 +509,7 @@ export default function SimulatorPage() {
       </nav>
 
       <div className="flex flex-1 pt-16">
-        {/* Left Sidebar — Feature layer selector + slider */}
+        {/* Left Sidebar — Feature layer selector */}
         <aside className="fixed left-0 w-56 h-[calc(100vh-64px)] bg-surface-container-low flex flex-col p-4 z-40 border-r border-outline-variant/20">
           <div className="flex-1 overflow-y-auto">
             {/* ADI quick-access button */}
@@ -488,7 +554,6 @@ export default function SimulatorPage() {
               ))}
             </div>
           </div>
-
         </aside>
 
         {/* Main Content */}
@@ -571,59 +636,84 @@ export default function SimulatorPage() {
                 Selected Tract
               </h3>
               <p className="text-lg font-bold text-primary font-headline">{selectedTractId}</p>
-              {tractFeatures?.get(selectedTractId) && (
+              {tractFeatures?.get(normalizeTractId(selectedTractId)) && (
                 <div className="mt-2 space-y-1">
                   <div className="flex justify-between text-[11px]">
                     <span className="text-secondary">ADI</span>
                     <span className="font-semibold text-on-surface">
-                      {formatLayerValue('adi', tractFeatures.get(selectedTractId)!['adi'])}
+                      {formatLayerValue('adi', tractFeatures.get(normalizeTractId(selectedTractId))!['adi'])}
                     </span>
                   </div>
                   {mapLayerId !== 'adi' && !isAdjustableLayer && (
                     <div className="flex justify-between text-[11px]">
                       <span className="text-secondary">{activeLayerMeta?.label ?? mapLayerId}</span>
                       <span className="font-semibold text-on-surface">
-                        {formatLayerValue(mapLayerId, tractFeatures.get(selectedTractId)![mapLayerId])}
+                        {formatLayerValue(mapLayerId, tractFeatures.get(normalizeTractId(selectedTractId))![mapLayerId])}
                       </span>
                     </div>
                   )}
                 </div>
               )}
 
-              {/* Adjustable slider — initialized to tract's actual value */}
-              {isAdjustableLayer && activeAdjustable && (
+              {/* Adjustable slider — full layer min/max; NaN-safe override handling */}
+              {isAdjustableLayer && activeAdjustable && (() => {
+                const hard = activeAdjustable;
+                const tid = normalizeTractId(selectedTractId);
+                const row = tractFeatures?.get(tid);
+                const tractRaw = row?.[mapLayerId];
+                const fallback =
+                  adjustableLayerCityMean ?? (hard.min + hard.max) / 2;
+                const baseVal =
+                  typeof tractRaw === 'number' && Number.isFinite(tractRaw)
+                    ? tractRaw
+                    : fallback;
+                const rawAdj = layerAdjustments[mapLayerId];
+                const adjusted = Number.isFinite(rawAdj) ? rawAdj! : baseVal;
+                const sliderValue = Math.min(
+                  hard.max,
+                  Math.max(hard.min, adjusted),
+                );
+                const dec = hard.step < 1 ? 1 : 0;
+                return (
                 <div className="mt-4 pt-3 border-t border-outline-variant/20">
                   <div className="flex justify-between mb-1">
                     <label className="text-[10px] font-bold text-secondary uppercase tracking-wider">
-                      {activeAdjustable.label}
+                      {hard.label}
                     </label>
                     <span className="text-xs font-bold text-primary">
-                      {(layerAdjustments[mapLayerId] ?? tractFeatures?.get(selectedTractId)?.[mapLayerId] ?? 0).toFixed(
-                        activeAdjustable.step < 1 ? 1 : 0
-                      )}
-                      {activeAdjustable.unit}
+                      {sliderValue.toFixed(dec)}
+                      {hard.unit}
                     </span>
                   </div>
                   <input
                     type="range"
-                    min={activeAdjustable.min}
-                    max={activeAdjustable.max}
-                    step={activeAdjustable.step}
-                    value={layerAdjustments[mapLayerId] ?? tractFeatures?.get(selectedTractId)?.[mapLayerId] ?? activeAdjustable.min}
-                    onChange={(e) =>
-                      setLayerAdjustments(prev => ({
+                    min={hard.min}
+                    max={hard.max}
+                    step={hard.step}
+                    value={sliderValue}
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value);
+                      if (!Number.isFinite(v)) return;
+                      setLayerAdjustments((prev) => ({
                         ...prev,
-                        [mapLayerId]: parseFloat(e.target.value),
-                      }))
-                    }
+                        [mapLayerId]: v,
+                      }));
+                    }}
                     className="w-full h-1 bg-surface-container-high rounded-full appearance-none cursor-pointer accent-primary"
                   />
                   <div className="flex justify-between text-[9px] text-secondary mt-1">
-                    <span>{activeAdjustable.min}{activeAdjustable.unit}</span>
-                    <span>{activeAdjustable.max}{activeAdjustable.unit}</span>
+                    <span>{hard.min}{hard.unit}</span>
+                    <span>{hard.max}{hard.unit}</span>
                   </div>
+                  {adjustableLayerCityMean != null && (
+                    <p className="text-[9px] text-secondary mt-1.5 leading-snug">
+                      City average {adjustableLayerCityMean.toFixed(dec)}
+                      {hard.unit}
+                    </p>
+                  )}
                 </div>
-              )}
+                );
+              })()}
 
               <button
                 onClick={() => setSelectedTractId(null)}
@@ -634,26 +724,22 @@ export default function SimulatorPage() {
             </div>
           )}
 
-          {/* Save button */}
-          <button
-            type="button"
-            onClick={handleSaveSimulation}
-            disabled={isSavingSimulation || isLoadingSavedSimulation}
-            className="w-full py-2.5 bg-white text-primary border border-primary/20 rounded-xl font-bold hover:bg-primary/5 transition-all flex items-center justify-center gap-2 text-sm disabled:opacity-60 shadow-sm"
-          >
-            <Save className="w-4 h-4" />
-            {isSavingSimulation ? 'Saving...' : 'Save Simulation'}
-          </button>
+          {/* Recalculation status */}
+          {recalcError && (
+            <div className="rounded-lg border border-error/20 bg-error/5 px-3 py-2 text-xs font-semibold text-error mb-4">
+              {recalcError}
+            </div>
+          )}
         </aside>
+
           <header className="mb-4">
             <h1 className="text-2xl font-extrabold tracking-tight text-primary">
-              F2025 Plan
+              Simulation
             </h1>
-            {saveMessage && (
-              <p className="text-sm font-semibold text-primary mt-1">{saveMessage}</p>
-            )}
-            {simulationError && (
-              <p className="text-sm font-semibold text-error mt-1">{simulationError}</p>
+            {!simulationId && (
+              <p className="text-sm text-secondary mt-1">
+                Create a simulation from My Simulations to enable recalculation.
+              </p>
             )}
           </header>
 
@@ -678,12 +764,14 @@ export default function SimulatorPage() {
                   bikeMiles={bikeMiles}
                   setBikeMiles={setBikeMiles}
                   isBikeMilesLayer={isBikeMilesLayer}
-                  isDrawingMode={isDrawingMode}      
-                  setIsDrawingMode={setIsDrawingMode} 
+                  isDrawingMode={isDrawingMode}
+                  setIsDrawingMode={setIsDrawingMode}
                   markers={markers}
                   setMarkers={setMarkers}
                   isMarkerLayer={isMarkerLayer}
                   markerType={isSchoolLayer ? 'school' : isLibraryLayer ? 'library' : null}
+                  onMarkerPlaced={handleMarkerPlaced}
+                  onBikeTrailDrawn={handleBikeTrailDrawn}
                 />
               )}
             </div>
@@ -757,7 +845,14 @@ export default function SimulatorPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setBikeMiles([])}
+                    onClick={() => {
+                      setBikeMiles([]);
+                      setGeometryItems((prev) => {
+                        const next = prev.filter((g) => g.feature_type !== 'bike_trail');
+                        void triggerRecalculate(next, snapshotSliderOverrides());
+                        return next;
+                      });
+                    }}
                     className="pointer-events-auto absolute top-24 right-4 z-20 px-3 py-1.5 rounded-lg text-[11px] font-bold shadow-md border transition-colors bg-white/95 text-red-500 border-red-300 hover:bg-red-50"
                   >
                     Clear
@@ -775,9 +870,15 @@ export default function SimulatorPage() {
                     </div>
                     <button
                       type="button"
-                      onClick={() =>
-                        setMarkers(m => m.filter(p => p.type !== (isSchoolLayer ? 'school' : 'library')))
-                      }
+                      onClick={() => {
+                        const ft = isSchoolLayer ? 'school' : 'library';
+                        setMarkers((m) => m.filter((p) => p.type !== ft));
+                        setGeometryItems((prev) => {
+                          const next = prev.filter((g) => g.feature_type !== ft);
+                          void triggerRecalculate(next, snapshotSliderOverrides());
+                          return next;
+                        });
+                      }}
                       className="pointer-events-auto absolute top-24 right-4 z-20 px-3 py-1.5 rounded-lg text-[11px] font-bold shadow-md border transition-colors bg-white/95 text-red-500 border-red-300 hover:bg-red-50"
                     >
                       Clear {isSchoolLayer ? 'schools' : 'libraries'}
@@ -827,11 +928,9 @@ export default function SimulatorPage() {
               </div>
             </div>
 
-            {/* Loading Overlay */}
+            {/* Loading / Recalculating Overlay */}
             <AnimatePresence>
-              {(isLoadingMap ||
-                isLoadingFeatures ||
-                isLoadingSavedSimulation) && (
+              {(isLoadingMap || isLoadingFeatures || isRecalculating) && (
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
@@ -850,8 +949,11 @@ export default function SimulatorPage() {
                         ? 'Initializing Geospatial Data...'
                         : isLoadingFeatures
                           ? 'Loading tract feature layers...'
-                          : 'Loading saved simulation...'}
+                          : 'Recalculating features...'}
                     </span>
+                    {isRecalculating && (
+                      <p className="text-xs text-secondary">This may take 5-15 seconds</p>
+                    )}
                   </div>
                 </motion.div>
               )}

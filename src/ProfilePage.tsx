@@ -30,10 +30,10 @@ export default function ProfilePage() {
           Policy Intel Chicago
         </button>
         <button
-          onClick={() => navigate('/simulator')}
+          onClick={() => navigate('/my-simulations')}
           className="text-sm font-semibold text-secondary hover:text-primary transition-colors"
         >
-          Simulator
+          My simulations
         </button>
       </nav>
 

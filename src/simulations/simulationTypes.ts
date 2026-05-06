@@ -1,31 +1,7 @@
-import type { MapLayerId, MarkerPoint } from '../mapLayers';
-
-export type ParameterValues = Record<string, number>;
-export type TractOverrides = Record<string, Record<string, number>>;
-export type BikeMilePoint = { x: number; y: number };
-export type LayerAdjustments = Record<string, number>;
-
-export type SimulationSnapshot = {
-  title: string;
-  notes?: string | null;
-  parameterValues: ParameterValues;
-  tractOverrides: TractOverrides;
-  selectedTractId: string | null;
-  mapLayerId: MapLayerId;
-  showSatellite: boolean;
-  bikeMiles: BikeMilePoint[];
-  markers: MarkerPoint[];
-  layerAdjustments: LayerAdjustments;
-  baseLifeExpectancy: number;
-  predictedOutcome: number;
-  currentOutcome: number;
-  currentOutcomeDiff: number;
-  policyModelVersion: string;
-};
-
-export type SavedSimulation = SimulationSnapshot & {
+export type Simulation = {
   id: string;
   userId: string;
+  name: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -33,21 +9,51 @@ export type SavedSimulation = SimulationSnapshot & {
 export type SimulationRow = {
   id: string;
   user_id: string;
-  title: string;
-  notes: string | null;
-  parameter_values: ParameterValues;
-  tract_overrides: TractOverrides;
-  selected_tract_id: string | null;
-  map_layer_id: MapLayerId;
-  show_satellite: boolean;
-  bike_miles: BikeMilePoint[] | null;
-  markers: MarkerPoint[] | null;
-  layer_adjustments: LayerAdjustments | null;
-  base_life_expectancy: number | string;
-  predicted_outcome: number | string;
-  current_outcome: number | string;
-  current_outcome_diff: number | string;
-  policy_model_version: string;
+  name: string;
   created_at: string;
   updated_at: string;
 };
+
+export type SimulationGeometry = {
+  id: string;
+  simulationId: string;
+  featureType: 'bike_trail' | 'park' | 'school' | 'library';
+  lat: number | null;
+  lon: number | null;
+  geometry: GeoJSON.LineString | GeoJSON.Polygon | null;
+  createdAt: string;
+};
+
+export type SimulationGeometryRow = {
+  id: string;
+  simulation_id: string;
+  feature_type: 'bike_trail' | 'park' | 'school' | 'library';
+  lat: number | null;
+  lon: number | null;
+  geometry: GeoJSON.LineString | GeoJSON.Polygon | null;
+  created_at: string;
+};
+
+export type SimulationFeatureRow = {
+  census_tract: string;
+  tree_canopy: number | null;
+  affordable_housing: number | null;
+  parks: number | null;
+  transit_stop: number | null;
+  bike_miles: number | null;
+  wifi_hotspots: number | null;
+  school_density: number | null;
+  library_count: number | null;
+  small_business: number | null;
+  food_access: number | null;
+  predicted_adi: number | null;
+};
+
+export type GeometryInput = {
+  feature_type: 'bike_trail' | 'park' | 'school' | 'library';
+  lat?: number;
+  lon?: number;
+  geometry?: GeoJSON.LineString | GeoJSON.Polygon;
+};
+
+export type SliderOverrides = Record<string, Record<string, number>>;

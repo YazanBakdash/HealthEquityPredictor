@@ -43,7 +43,7 @@ export default function LandingPage() {
         </span>
         <div className="flex items-center gap-4">
           <button
-            onClick={() => navigate('/simulator')}
+            onClick={() => navigate('/my-simulations')}
             className="text-sm font-semibold text-secondary hover:text-primary transition-colors hidden sm:block"
           >
             Simulator
@@ -112,7 +112,7 @@ export default function LandingPage() {
 
           <div className="flex items-center justify-center gap-4 flex-wrap">
             <button
-              onClick={() => navigate('/simulator')}
+              onClick={() => navigate('/my-simulations')}
               className="px-8 py-3.5 bg-primary text-white rounded-xl font-bold shadow-lg shadow-primary/20 hover:shadow-xl hover:shadow-primary/30 hover:scale-[1.02] active:scale-95 transition-all flex items-center gap-2 text-base"
             >
               Launch Simulator
@@ -341,7 +341,7 @@ export default function LandingPage() {
                 Chicago&rsquo;s neighborhoods.
               </p>
               <button
-                onClick={() => navigate('/simulator')}
+                onClick={() => navigate('/my-simulations')}
                 className="px-8 py-3.5 bg-white text-primary rounded-xl font-bold hover:bg-white/90 transition-all inline-flex items-center gap-2"
               >
                 Get Started

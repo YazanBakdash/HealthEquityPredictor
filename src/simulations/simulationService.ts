@@ -1,91 +1,112 @@
 import { supabase } from '../lib/supabaseClient';
 import type {
-  SavedSimulation,
+  Simulation,
   SimulationRow,
-  SimulationSnapshot,
+  SimulationGeometry,
+  SimulationGeometryRow,
+  SimulationFeatureRow,
+  GeometryInput,
+  SliderOverrides,
 } from './simulationTypes';
 
-function toNumber(value: number | string) {
-  return typeof value === 'number' ? value : Number(value);
-}
+const FLASK_URL =
+  import.meta.env.VITE_FLASK_API_URL?.trim() || 'http://127.0.0.1:5000';
 
-function mapRow(row: SimulationRow): SavedSimulation {
+function mapSimulationRow(row: SimulationRow): Simulation {
   return {
     id: row.id,
     userId: row.user_id,
-    title: row.title,
-    notes: row.notes,
-    parameterValues: row.parameter_values,
-    tractOverrides: row.tract_overrides,
-    selectedTractId: row.selected_tract_id,
-    mapLayerId: row.map_layer_id,
-    showSatellite: row.show_satellite,
-    bikeMiles: row.bike_miles ?? [],
-    markers: row.markers ?? [],
-    layerAdjustments: row.layer_adjustments ?? {},
-    baseLifeExpectancy: toNumber(row.base_life_expectancy),
-    predictedOutcome: toNumber(row.predicted_outcome),
-    currentOutcome: toNumber(row.current_outcome),
-    currentOutcomeDiff: toNumber(row.current_outcome_diff),
-    policyModelVersion: row.policy_model_version,
+    name: row.name,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
-export async function saveSimulation(
+function mapGeometryRow(row: SimulationGeometryRow): SimulationGeometry {
+  return {
+    id: row.id,
+    simulationId: row.simulation_id,
+    featureType: row.feature_type,
+    lat: row.lat,
+    lon: row.lon,
+    geometry: row.geometry,
+    createdAt: row.created_at,
+  };
+}
+
+export async function createSimulation(
   userId: string,
-  snapshot: SimulationSnapshot,
-): Promise<SavedSimulation> {
+  name: string,
+): Promise<Simulation> {
   const { data, error } = await supabase
     .from('simulations')
-    .insert({
-      user_id: userId,
-      title: snapshot.title,
-      notes: snapshot.notes ?? null,
-      parameter_values: snapshot.parameterValues,
-      tract_overrides: snapshot.tractOverrides,
-      selected_tract_id: snapshot.selectedTractId,
-      map_layer_id: snapshot.mapLayerId,
-      show_satellite: snapshot.showSatellite,
-      bike_miles: snapshot.bikeMiles,
-      markers: snapshot.markers,
-      layer_adjustments: snapshot.layerAdjustments,
-      base_life_expectancy: snapshot.baseLifeExpectancy,
-      predicted_outcome: snapshot.predictedOutcome,
-      current_outcome: snapshot.currentOutcome,
-      current_outcome_diff: snapshot.currentOutcomeDiff,
-      policy_model_version: snapshot.policyModelVersion,
-    })
+    .insert({ user_id: userId, name })
     .select()
     .single();
 
   if (error) throw error;
-  return mapRow(data as SimulationRow);
+  return mapSimulationRow(data as SimulationRow);
 }
 
-export async function listSimulations(): Promise<SavedSimulation[]> {
+export async function listSimulations(): Promise<Simulation[]> {
   const { data, error } = await supabase
     .from('simulations')
     .select('*')
     .order('updated_at', { ascending: false });
 
   if (error) throw error;
-  return ((data ?? []) as SimulationRow[]).map(mapRow);
-}
-
-export async function getSimulation(id: string): Promise<SavedSimulation> {
-  const { data, error } = await supabase
-    .from('simulations')
-    .select('*')
-    .eq('id', id)
-    .single();
-
-  if (error) throw error;
-  return mapRow(data as SimulationRow);
+  return ((data ?? []) as SimulationRow[]).map(mapSimulationRow);
 }
 
 export async function deleteSimulation(id: string): Promise<void> {
   const { error } = await supabase.from('simulations').delete().eq('id', id);
   if (error) throw error;
+}
+
+export async function getSimulationFeatures(
+  simulationId: string,
+): Promise<SimulationFeatureRow[]> {
+  const { data, error } = await supabase
+    .from('simulation_features')
+    .select('*')
+    .eq('simulation_id', simulationId);
+
+  if (error) throw error;
+  return (data ?? []) as SimulationFeatureRow[];
+}
+
+export async function getSimulationGeometry(
+  simulationId: string,
+): Promise<SimulationGeometry[]> {
+  const { data, error } = await supabase
+    .from('simulation_geometry')
+    .select('*')
+    .eq('simulation_id', simulationId);
+
+  if (error) throw error;
+  return ((data ?? []) as SimulationGeometryRow[]).map(mapGeometryRow);
+}
+
+export async function recalculate(
+  simulationId: string,
+  geometry: GeometryInput[],
+  sliderOverrides: SliderOverrides,
+): Promise<SimulationFeatureRow[]> {
+  const response = await fetch(`${FLASK_URL}/recalculate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      simulation_id: simulationId,
+      geometry,
+      slider_overrides: sliderOverrides,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || `Recalculation failed (${response.status})`);
+  }
+
+  const result = await response.json();
+  return result.features as SimulationFeatureRow[];
 }

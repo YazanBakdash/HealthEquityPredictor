@@ -2,6 +2,8 @@
  * Map choropleth layers: simulated ADI plus each column from public/all_tract_features.csv
  * (same schema as inputs_processed/all_tract_features*.csv).
  */
+import { normalizeTractId } from './tractId';
+
 export const ALL_TRACT_FEATURES_CSV_URL = '/all_tract_features.csv';
 
 export type MapLayerId =
@@ -154,7 +156,7 @@ export function parseTractFeaturesCsv(text: string): Map<string, Record<string, 
       const raw = (cols[j] ?? '').trim();
       row[key] = raw === '' ? Number.NaN : Number(raw);
     }
-    out.set(tractId, row);
+    out.set(normalizeTractId(tractId), row);
   }
 
   return out;

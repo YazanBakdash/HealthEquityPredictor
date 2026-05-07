@@ -1,4 +1,39 @@
+.Rhistory
+.RData
+.DS_Store
+
+results/
+*.pkl
+*.rda
+
+<<<<<<< HEAD
 .Rproj.user
 .Rhistory
 .RData
 .Ruserdata
+=======
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env
+.env.local
+.env.*.local
+!.env.example
+supabase/.temp/
+__pycache__/
+*.py[cod]
+server/model.pkl
+
+Businesses_Data/
+
+inputs_processed/Business_Licenses_20260415_with_tracts.csv
+inputs_raw/bike_routes.geojson
+inputs_raw/tree_canopy.geojson
+
+# Generated analysis artifacts
+public/adi_correlation_plot.png
+public/*_analysis_plot.png
+>>>>>>> 13fc4fd5eb2eea4230f9de25ec80efa1e532bbf0

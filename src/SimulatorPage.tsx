@@ -30,15 +30,36 @@ import type { GeometryInput, SimulationFeatureRow } from './simulations/simulati
 
 const CHICAGO_GEOJSON_URL = '/census_tracts.json';
 
-const ADJUSTABLE_LAYERS: Partial<Record<MapLayerId, { min: number; max: number; step: number; unit: string; label: string }>> = {
-  Affordable_Housing: { min: 0, max: 50, step: 0.5, unit: ' / 1k', label: 'Affordable Housing' },
-  Tree_Canopy:   { min: 0,  max: 100, step: 1,   unit: '%',        label: 'Tree Canopy Coverage' },
-  Parks:         { min: 0,  max: 500, step: 5,    unit: ' ac/mi²',  label: 'Park Acreage' },
-  Small_Business:{ min: 0,  max: 50,  step: 0.5,  unit: ' / 1k',   label: 'Small Businesses' },
-  Wifi_Hotspots: { min: 0,  max: 20,  step: 0.5,  unit: ' / mi²',  label: 'Wi-Fi Hotspots' },
-  Food_Access:   { min: 0,  max: 20,  step: 0.5,  unit: ' / 1k',   label: 'Food Access' },
-  Transit_Stop:  { min: 0,  max: 100, step: 1,    unit: ' / 10k',  label: 'Transit Stops' },
+/** Snap to slider steps so thumb position matches min/max/step and labels. */
+function snapRangeValue(value: number, min: number, max: number, step: number): number {
+  if (!Number.isFinite(value)) return min;
+  const steps = Math.round((value - min) / step);
+  const snapped = min + steps * step;
+  return Math.min(max, Math.max(min, snapped));
+}
+
+/** Minimum slider upper bound when CSV has no usable values for a layer. */
+const ADJUSTABLE_LAYER_SPEC: Partial<
+  Record<MapLayerId, { min: number; step: number; unit: string; label: string; fallbackMax: number }>
+> = {
+  Affordable_Housing: { min: 0, step: 0.5, unit: ' / 1k', label: 'Affordable Housing', fallbackMax: 50 },
+  Tree_Canopy: { min: 0, step: 1, unit: '%', label: 'Tree Canopy Coverage', fallbackMax: 100 },
+  Parks: { min: 0, step: 5, unit: ' ac/mi²', label: 'Park Acreage', fallbackMax: 500 },
+  Small_Business: { min: 0, step: 0.5, unit: ' / 1k', label: 'Small Businesses', fallbackMax: 50 },
+  Wifi_Hotspots: { min: 0, step: 0.5, unit: ' / mi²', label: 'Wi-Fi Hotspots', fallbackMax: 20 },
+  Food_Access: { min: 0, step: 0.5, unit: ' / 1k', label: 'Food Access', fallbackMax: 20 },
+  Transit_Stop: { min: 0, step: 1, unit: ' / 10k', label: 'Transit Stops', fallbackMax: 100 },
 };
+
+/** Strictly greater than the largest observed tract value, snapped to the step grid above it. */
+function sliderDatasetCeiling(dataMax: number, min: number, step: number, fallbackMax: number): number {
+  if (!Number.isFinite(dataMax)) return fallbackMax;
+  const clamped = Math.max(dataMax, min);
+  const k = Math.floor((clamped - min) / step);
+  let ceiling = min + (k + 1) * step;
+  if (ceiling <= clamped) ceiling += step;
+  return ceiling;
+}
 
 function interpolatorFromRamp(ramp: LayerMeta['colorRamp']) {
   switch (ramp) {
@@ -172,9 +193,29 @@ export default function SimulatorPage() {
   const isLibraryLayer = mapLayerId === 'Library_Count';
   const isMarkerLayer = isSchoolLayer || isLibraryLayer;
 
+  const tractSliderCeilings = useMemo(() => {
+    const m = new Map<MapLayerId, number>();
+    if (!tractFeatures) return m;
+    for (const layerId of Object.keys(ADJUSTABLE_LAYER_SPEC) as MapLayerId[]) {
+      const spec = ADJUSTABLE_LAYER_SPEC[layerId];
+      if (!spec) continue;
+      let maxV = -Infinity;
+      tractFeatures.forEach((row) => {
+        const v = row[layerId];
+        if (typeof v === 'number' && Number.isFinite(v)) maxV = Math.max(maxV, v);
+      });
+      const ceiling =
+        maxV === -Infinity
+          ? spec.fallbackMax
+          : sliderDatasetCeiling(maxV, spec.min, spec.step, spec.fallbackMax);
+      m.set(layerId, ceiling);
+    }
+    return m;
+  }, [tractFeatures]);
+
   const [layerAdjustments, setLayerAdjustments] = useState<Record<string, number>>({});
-  const isAdjustableLayer = mapLayerId in ADJUSTABLE_LAYERS;
-  const activeAdjustable = ADJUSTABLE_LAYERS[mapLayerId];
+  const isAdjustableLayer = mapLayerId in ADJUSTABLE_LAYER_SPEC;
+  const activeAdjustableSpec = ADJUSTABLE_LAYER_SPEC[mapLayerId];
 
   const [isRecalculating, setIsRecalculating] = useState(false);
   const [recalcError, setRecalcError] = useState<string | null>(null);
@@ -191,8 +232,37 @@ export default function SimulatorPage() {
     const tid = selectedTractIdRef.current;
     const adj = layerAdjustmentsRef.current;
     if (!tid || Object.keys(adj).length === 0) return {};
-    return { [tid]: { ...adj } };
+    const normalizedTractId = normalizeTractId(tid);
+    const cleaned: Record<string, number> = {};
+    for (const [featureKey, value] of Object.entries(adj)) {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        cleaned[featureKey] = value;
+      }
+    }
+    if (Object.keys(cleaned).length === 0) return {};
+    return { [normalizedTractId]: cleaned };
   }, []);
+
+  /** Map + histogram use this: baseline/API rows plus pending slider values for the selected tract. */
+  const displayTractFeatures = useMemo(() => {
+    if (!tractFeatures) return null;
+    const tid = selectedTractId ? normalizeTractId(selectedTractId) : null;
+    const adjEntries = Object.entries(layerAdjustments).filter(
+      ([, v]) => typeof v === 'number' && Number.isFinite(v),
+    );
+    if (!tid || adjEntries.length === 0) return tractFeatures;
+
+    const next = new Map(tractFeatures);
+    const base = next.get(tid);
+    if (!base) return tractFeatures;
+
+    const merged: Record<string, number> = { ...base };
+    for (const [k, v] of adjEntries) {
+      merged[k] = v;
+    }
+    next.set(tid, merged);
+    return next;
+  }, [tractFeatures, selectedTractId, layerAdjustments]);
 
   // Load GeoJSON tract boundaries
   useEffect(() => {
@@ -265,7 +335,7 @@ useEffect(() => {
     const cLon = lons.reduce((a: number, b: number) => a + b, 0) / lons.length;
     const cLat = lats.reduce((a: number, b: number) => a + b, 0) / lats.length;
 
-    const schoolCount = Math.round(Math.min(row['School_Density'] ?? 0, 6));
+    const schoolCount = Math.max(0, Math.round(Number(row['School_Density']) || 0));
     for (let i = 0; i < schoolCount; i++) {
       existingMarkers.push({
         id: `existing-school-${tractId}-${i}`,
@@ -276,7 +346,7 @@ useEffect(() => {
       });
     }
 
-    const libCount = Math.round(Math.min(row['Library_Count'] ?? 0, 3));
+    const libCount = Math.max(0, Math.round(Number(row['Library_Count']) || 0));
     for (let i = 0; i < libCount; i++) {
       existingMarkers.push({
         id: `existing-library-${tractId}-${i}`,
@@ -335,7 +405,8 @@ useEffect(() => {
       if (!prev) return prev;
       const next = new Map(prev);
       for (const row of rows) {
-        const existing = next.get(row.census_tract) ?? {};
+        const tid = normalizeTractId(row.census_tract);
+        const existing = next.get(tid) ?? {};
         const updated: Record<string, number> = { ...existing };
         if (row.tree_canopy != null) updated['Tree_Canopy'] = row.tree_canopy;
         if (row.affordable_housing != null) updated['Affordable_Housing'] = row.affordable_housing;
@@ -348,7 +419,7 @@ useEffect(() => {
         if (row.small_business != null) updated['Small_Business'] = row.small_business;
         if (row.food_access != null) updated['Food_Access'] = row.food_access;
         if (row.predicted_adi != null) updated['adi'] = row.predicted_adi;
-        next.set(normalizeTractId(row.census_tract), updated);
+        next.set(tid, updated);
       }
       return next;
     });
@@ -409,7 +480,7 @@ useEffect(() => {
     if (sliderTimerRef.current) clearTimeout(sliderTimerRef.current);
     sliderTimerRef.current = setTimeout(() => {
       triggerRecalculate(geometryItems, snapshotSliderOverrides());
-    }, 800);
+    }, 350);
 
     return () => { if (sliderTimerRef.current) clearTimeout(sliderTimerRef.current); };
   }, [
@@ -429,9 +500,9 @@ useEffect(() => {
   const activeLayerMeta = useMemo(() => layerMeta(mapLayerId), [mapLayerId]);
 
   const featureExtent = useMemo((): [number, number] | null => {
-    if (!tractFeatures) return null;
+    if (!displayTractFeatures) return null;
     const vals: number[] = [];
-    tractFeatures.forEach((row) => {
+    displayTractFeatures.forEach((row) => {
       const v = row[mapLayerId];
       if (typeof v === 'number' && Number.isFinite(v)) vals.push(v);
     });
@@ -442,11 +513,11 @@ useEffect(() => {
     const hi = vals[Math.min(p95Idx, vals.length - 1)];
     if (lo === hi) return [lo - 1e-9, hi + 1e-9];
     return [lo, hi];
-  }, [mapLayerId, tractFeatures]);
+  }, [mapLayerId, displayTractFeatures]);
 
   /** City-wide mean for the active adjustable layer (legend text only). */
   const adjustableLayerCityMean = useMemo(() => {
-    if (!tractFeatures || !isAdjustableLayer) return null;
+    if (!tractFeatures || !isAdjustableLayer || !activeAdjustableSpec) return null;
     const vals: number[] = [];
     tractFeatures.forEach((row) => {
       const v = row[mapLayerId];
@@ -454,7 +525,7 @@ useEffect(() => {
     });
     const mean = d3.mean(vals);
     return mean != null && Number.isFinite(mean) ? mean : null;
-  }, [tractFeatures, isAdjustableLayer, mapLayerId]);
+  }, [tractFeatures, isAdjustableLayer, mapLayerId, activeAdjustableSpec]);
 
   const featureColorScale = useMemo(() => {
     if (!featureExtent || !activeLayerMeta) return null;
@@ -463,16 +534,16 @@ useEffect(() => {
   }, [activeLayerMeta, featureExtent, mapLayerId]);
 
   const fillForTract = useMemo(() => {
-    if (!tractFeatures || !featureColorScale) {
+    if (!displayTractFeatures || !featureColorScale) {
       return () => '#cbd5e1';
     }
     return (tractId: string) => {
-      const row = tractFeatures.get(tractId);
+      const row = displayTractFeatures.get(tractId);
       const v = row?.[mapLayerId];
       if (typeof v !== 'number' || !Number.isFinite(v)) return '#cbd5e1';
       return featureColorScale(v);
     };
-  }, [featureColorScale, mapLayerId, tractFeatures]);
+  }, [featureColorScale, mapLayerId, displayTractFeatures]);
 
   const ADI_NATIONAL_AVG = 100;
 
@@ -663,13 +734,13 @@ useEffect(() => {
           </button>
 
           {/* Distribution histogram */}
-          {tractFeatures && featureExtent && (
+          {displayTractFeatures && featureExtent && (
             <div className="bg-white rounded-xl p-4 border border-outline-variant/20 shadow-sm mb-4">
               <h3 className="text-[10px] font-bold text-secondary uppercase tracking-[0.15em] mb-3">
                 {activeLayerMeta?.label ?? 'Layer'} Distribution
               </h3>
               <FeatureHistogram
-                tractFeatures={tractFeatures}
+                tractFeatures={displayTractFeatures}
                 layerId={mapLayerId}
                 extent={featureExtent}
                 colorRamp={activeLayerMeta?.colorRamp ?? 'blues'}
@@ -709,60 +780,65 @@ useEffect(() => {
                 </div>
               )}
 
-              {/* Adjustable slider — full layer min/max; NaN-safe override handling */}
-              {isAdjustableLayer && activeAdjustable && (() => {
-                const hard = activeAdjustable;
+              {/* Adjustable slider — max strictly above city-wide tract maximum */}
+              {isAdjustableLayer && activeAdjustableSpec && (() => {
+                const spec = activeAdjustableSpec;
+                const sliderMax =
+                  tractSliderCeilings.get(mapLayerId) ?? spec.fallbackMax;
                 const tid = normalizeTractId(selectedTractId);
                 const row = tractFeatures?.get(tid);
                 const tractRaw = row?.[mapLayerId];
                 const fallback =
-                  adjustableLayerCityMean ?? (hard.min + hard.max) / 2;
+                  adjustableLayerCityMean ?? (spec.min + sliderMax) / 2;
                 const baseVal =
                   typeof tractRaw === 'number' && Number.isFinite(tractRaw)
                     ? tractRaw
                     : fallback;
                 const rawAdj = layerAdjustments[mapLayerId];
                 const adjusted = Number.isFinite(rawAdj) ? rawAdj! : baseVal;
-                const sliderValue = Math.min(
-                  hard.max,
-                  Math.max(hard.min, adjusted),
+                const sliderValue = snapRangeValue(
+                  Math.min(sliderMax, Math.max(spec.min, adjusted)),
+                  spec.min,
+                  sliderMax,
+                  spec.step,
                 );
-                const dec = hard.step < 1 ? 1 : 0;
+                const dec = spec.step < 1 ? 1 : 0;
                 return (
                 <div className="mt-4 pt-3 border-t border-outline-variant/20">
                   <div className="flex justify-between mb-1">
                     <label className="text-[10px] font-bold text-secondary uppercase tracking-wider">
-                      {hard.label}
+                      {spec.label}
                     </label>
                     <span className="text-xs font-bold text-primary">
                       {sliderValue.toFixed(dec)}
-                      {hard.unit}
+                      {spec.unit}
                     </span>
                   </div>
                   <input
                     type="range"
-                    min={hard.min}
-                    max={hard.max}
-                    step={hard.step}
+                    min={spec.min}
+                    max={sliderMax}
+                    step={spec.step}
                     value={sliderValue}
                     onChange={(e) => {
                       const v = parseFloat(e.target.value);
                       if (!Number.isFinite(v)) return;
+                      const snapped = snapRangeValue(v, spec.min, sliderMax, spec.step);
                       setLayerAdjustments((prev) => ({
                         ...prev,
-                        [mapLayerId]: v,
+                        [mapLayerId]: snapped,
                       }));
                     }}
-                    className="w-full h-1 bg-surface-container-high rounded-full appearance-none cursor-pointer accent-primary"
+                    className="sim-range w-full block"
                   />
                   <div className="flex justify-between text-[9px] text-secondary mt-1">
-                    <span>{hard.min}{hard.unit}</span>
-                    <span>{hard.max}{hard.unit}</span>
+                    <span>{spec.min}{spec.unit}</span>
+                    <span>{sliderMax.toFixed(spec.step < 1 ? 1 : 0)}{spec.unit}</span>
                   </div>
                   {adjustableLayerCityMean != null && (
                     <p className="text-[9px] text-secondary mt-1.5 leading-snug">
                       City average {adjustableLayerCityMean.toFixed(dec)}
-                      {hard.unit}
+                      {spec.unit}
                     </p>
                   )}
                 </div>
@@ -823,6 +899,8 @@ useEffect(() => {
                   markers={markers}
                   setMarkers={setMarkers}
                   isMarkerLayer={isMarkerLayer}
+                  showSchoolMarkers={isSchoolLayer}
+                  showLibraryMarkers={isLibraryLayer}
                   markerType={isSchoolLayer ? 'school' : isLibraryLayer ? 'library' : null}
                   onMarkerPlaced={handleMarkerPlaced}
                   onBikeTrailDrawn={handleBikeTrailDrawn}
@@ -968,7 +1046,7 @@ useEffect(() => {
                         <span className="text-sm font-bold text-on-surface">
                           {(() => {
                             const tractId = tractIdFromProps(hoveredTract);
-                            const v = tractFeatures?.get(tractId)?.[mapLayerId];
+                            const v = displayTractFeatures?.get(tractId)?.[mapLayerId];
                             return formatLayerValue(
                               mapLayerId,
                               typeof v === 'number' ? v : Number.NaN,

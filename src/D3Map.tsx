@@ -14,6 +14,12 @@ import { normalizeTractId } from './tractId';
 const TILE_URL =
   'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 
+/** SVG marker radius divisor — visually smaller pins that scale with zoom. */
+const MARKER_R_BASE_EXISTING = 1.85;
+const MARKER_R_BASE_USER = 2.85;
+const MARKER_STROKE_EXISTING = 0.4;
+const MARKER_STROKE_USER = 0.55;
+
 
 const QUARTER_MILE_DEGREES = 0.25 / 69;
 const BORDER_BUFFER_DEGREES = 0.02 / 69;
@@ -85,6 +91,10 @@ type D3MapProps = {
   markers: MarkerPoint[];
   setMarkers: (m: MarkerPoint[]) => void;
   isMarkerLayer: boolean;
+  /** When true, render baseline + user school markers only on Schools layer. */
+  showSchoolMarkers?: boolean;
+  /** When true, render baseline + user library markers only on Libraries layer. */
+  showLibraryMarkers?: boolean;
   markerType: 'school' | 'library' | null;
   onMarkerPlaced?: (lat: number, lon: number, type: 'school' | 'library') => void;
   onBikeTrailDrawn?: (coordinates: [number, number][]) => void;
@@ -115,6 +125,8 @@ const D3Map = forwardRef<D3MapHandle, D3MapProps>(function D3Map(
   markers,
   setMarkers,
   isMarkerLayer,
+  showSchoolMarkers = false,
+  showLibraryMarkers = false,
   markerType,
   onMarkerPlaced,
   onBikeTrailDrawn,
@@ -149,6 +161,35 @@ const D3Map = forwardRef<D3MapHandle, D3MapProps>(function D3Map(
     () => d3.geoPath().projection(projection),
     [projection],
   );
+
+  const markersToDraw = useMemo(
+    () =>
+      markers.filter(
+        (m) =>
+          (showSchoolMarkers && m.type === 'school') ||
+          (showLibraryMarkers && m.type === 'library'),
+      ),
+    [markers, showSchoolMarkers, showLibraryMarkers],
+  );
+
+  /** Pre-project lat/lon so pan/zoom only scales circles (projection rarely changes). */
+  const markerDrawList = useMemo(() => {
+    const list: { marker: MarkerPoint; mx: number; my: number }[] = [];
+    for (const marker of markersToDraw) {
+      const svgPos = marker.existing
+        ? projection([marker.lon, marker.lat])
+        : ([marker.x, marker.y] as [number, number]);
+      if (
+        !svgPos ||
+        !Number.isFinite(svgPos[0]) ||
+        !Number.isFinite(svgPos[1])
+      ) {
+        continue;
+      }
+      list.push({ marker, mx: svgPos[0], my: svgPos[1] });
+    }
+    return list;
+  }, [markersToDraw, projection]);
 
   const mapBounds = useMemo(() => {
     if (!data?.features?.length) return null;
@@ -537,68 +578,41 @@ const D3Map = forwardRef<D3MapHandle, D3MapProps>(function D3Map(
             );
           })()}
 
-          {markers.map(marker => {
-            // For existing markers, project lat/lon → SVG coords at render time
-            const svgPos = marker.existing
-              ? projection([marker.lon, marker.lat])
-              : [marker.x, marker.y];
-            if (!svgPos) return null;
-            const [mx, my] = svgPos;
-
-            const size = marker.existing ? 7 / transform.k : 10 / transform.k;
-            const opacity = marker.existing ? 0.45 : 1;
+          {markerDrawList.map(({ marker, mx, my }) => {
+            const k = transform.k;
+            const r = (marker.existing ? MARKER_R_BASE_EXISTING : MARKER_R_BASE_USER) / k;
+            const sw = (marker.existing ? MARKER_STROKE_EXISTING : MARKER_STROKE_USER) / k;
+            const fill = marker.type === 'school' ? '#2563eb' : '#6d28d9';
 
             return (
               <g
                 key={marker.id}
                 transform={`translate(${mx}, ${my})`}
-                style={{ opacity }}
+                style={{ opacity: marker.existing ? 0.45 : 1 }}
                 className={marker.existing ? 'pointer-events-none' : 'cursor-pointer'}
                 onClick={marker.existing ? undefined : (e) => {
                   e.stopPropagation();
-                  setMarkers(markers.filter(m => m.id !== marker.id));
+                  setMarkers(markers.filter((m) => m.id !== marker.id));
                 }}
               >
-                {marker.type === 'school' ? (
-                  <>
-                    <rect
-                      x={-size} y={-size}
-                      width={size * 2} height={size * 2}
-                      rx={3 / transform.k}
-                      fill="#3B82F6"
-                      stroke="white"
-                      strokeWidth={1.5 / transform.k}
-                    />
-                    <text
-                      x={0} y={1 / transform.k}
-                      textAnchor="middle" dominantBaseline="middle"
-                      fill="white" fontSize={size * 1.1} fontWeight="bold"
-                    >
-                      S
-                    </text>
-                  </>
-                ) : (
-                  <>
-                    <rect
-                      x={-size} y={-size}
-                      width={size * 2} height={size * 2}
-                      rx={3 / transform.k}
-                      fill="#7C3AED"
-                      stroke="white"
-                      strokeWidth={1.5 / transform.k}
-                    />
-                    <text
-                      x={0} y={1 / transform.k}
-                      textAnchor="middle" dominantBaseline="middle"
-                      fill="white" fontSize={size * 1.1} fontWeight="bold"
-                    >
-                      L
-                    </text>
-                  </>
-                )}
+                <title>
+                  {marker.existing
+                    ? marker.type === 'school'
+                      ? 'Schools (tract estimate)'
+                      : 'Libraries (tract estimate)'
+                    : marker.type === 'school'
+                      ? 'Placed school'
+                      : 'Placed library'}
+                </title>
+                <circle
+                  r={r}
+                  fill={fill}
+                  stroke="#ffffff"
+                  strokeWidth={sw}
+                />
               </g>
             );
-          })}  
+          })}
         </g>
       </g>
     </svg>

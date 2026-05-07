@@ -8,9 +8,50 @@ import type {
   GeometryInput,
   SliderOverrides,
 } from './simulationTypes';
+import { normalizeTractId } from '../tractId';
 
 const FLASK_URL =
   import.meta.env.VITE_FLASK_API_URL?.trim() || 'http://127.0.0.1:5000';
+
+type FlaskFeatureRow = {
+  census_tract: string;
+  tree_canopy?: number | null;
+  affordable_housing?: number | null;
+  parks?: number | null;
+  transit_stop?: number | null;
+  bike_miles?: number | null;
+  wifi_hotspots?: number | null;
+  school_density?: number | null;
+  library_count?: number | null;
+  small_business?: number | null;
+  food_access?: number | null;
+  predicted_adi?: number | null;
+};
+
+type FlaskRecalculateResponse = {
+  features: FlaskFeatureRow[];
+};
+
+function toFiniteOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function mapFlaskFeatureRow(row: FlaskFeatureRow): SimulationFeatureRow {
+  return {
+    census_tract: normalizeTractId(row.census_tract),
+    tree_canopy: toFiniteOrNull(row.tree_canopy),
+    affordable_housing: toFiniteOrNull(row.affordable_housing),
+    parks: toFiniteOrNull(row.parks),
+    transit_stop: toFiniteOrNull(row.transit_stop),
+    bike_miles: toFiniteOrNull(row.bike_miles),
+    wifi_hotspots: toFiniteOrNull(row.wifi_hotspots),
+    school_density: toFiniteOrNull(row.school_density),
+    library_count: toFiniteOrNull(row.library_count),
+    small_business: toFiniteOrNull(row.small_business),
+    food_access: toFiniteOrNull(row.food_access),
+    predicted_adi: toFiniteOrNull(row.predicted_adi),
+  };
+}
 
 function mapSimulationRow(row: SimulationRow): Simulation {
   return {
@@ -103,10 +144,13 @@ export async function recalculate(
   });
 
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
+    const err = await response
+      .json()
+      .catch(async () => ({ error: await response.text().catch(() => '') }));
     throw new Error(err.error || `Recalculation failed (${response.status})`);
   }
 
-  const result = await response.json();
-  return result.features as SimulationFeatureRow[];
+  const result = (await response.json()) as FlaskRecalculateResponse;
+  const rows = Array.isArray(result.features) ? result.features : [];
+  return rows.map(mapFlaskFeatureRow);
 }

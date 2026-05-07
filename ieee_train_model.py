@@ -1,38 +1,23 @@
 # Tune Random Forest for ADI Prediction ----
+# Saves the fitted estimator to server/model.pkl for Flask (same FEATURE_COLS as server/recalculate.py).
 
-# load packages ----
 import os
 import pickle
+import warnings
+
+import joblib
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import warnings
+
 warnings.filterwarnings("ignore")
 
 from sklearn.model_selection import train_test_split, RepeatedKFold, GridSearchCV
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import r2_score, mean_absolute_error
-from sklearn.metrics import root_mean_squared_error
+from sklearn.metrics import r2_score, mean_absolute_error, root_mean_squared_error
 
-# set seed ----
-SEED = 73
-
-# load data ----
-import os
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_PATH = os.path.join(BASE_DIR, "data", "adi.csv")
-RESULTS_DIR = os.path.join(BASE_DIR, "results")
-
-adi = pd.read_csv(DATA_PATH)
-
-print(adi.columns.tolist())
-
-
-# clean/select variables ----
-adi_cleaned = adi[[
-    "Area Deprivation Index (ADI)",
-    "census_tract",
+# Must match FEATURE_COLS order in server/recalculate.py (Flask inference).
+FEATURE_COLS = [
     "Tree_Canopy",
     "Affordable_Housing",
     "Parks",
@@ -42,74 +27,88 @@ adi_cleaned = adi[[
     "School_Density",
     "Library_Count",
     "Small_Business",
-    "Grocery_Store",
+    "Food_Access",
     "Tract_Area_SqMi",
-    "Population"
-]]
+    "Population",
+]
 
-adi_cleaned = adi_cleaned.rename(
-    columns={"Area Deprivation Index (ADI)": "ADI"}
+SEED = 73
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_PATH = os.path.join(BASE_DIR, "data", "adi.csv")
+RESULTS_DIR = os.path.join(BASE_DIR, "results")
+SERVER_MODEL_PATH = os.path.join(BASE_DIR, "server", "model.pkl")
+
+os.makedirs(RESULTS_DIR, exist_ok=True)
+os.makedirs(os.path.dirname(SERVER_MODEL_PATH), exist_ok=True)
+
+adi = pd.read_csv(DATA_PATH)
+print(adi.columns.tolist())
+
+# Align legacy CSV header with pipeline naming
+if "Food_Access" not in adi.columns and "Grocery_Store" in adi.columns:
+    adi = adi.rename(columns={"Grocery_Store": "Food_Access"})
+
+required = ["Area Deprivation Index (ADI)", "census_tract", *FEATURE_COLS]
+missing = [c for c in required if c not in adi.columns]
+if missing:
+    raise ValueError(f"adi.csv missing columns: {missing}")
+
+adi_cleaned = adi[required].rename(
+    columns={"Area Deprivation Index (ADI)": "ADI"},
 )
 
-# split data ----
-X = adi_cleaned.drop(columns=["ADI", "census_tract"])
+# Same matrix Flask sends to .predict() (infra + tract context)
+X = adi_cleaned[FEATURE_COLS].copy()
 y = adi_cleaned["ADI"]
 
-# create ADI bins for stratified regression split
+# Stratified regression split
 y_bins = pd.qcut(y, q=5, duplicates="drop")
-
 X_train, X_test, y_train, y_test = train_test_split(
     X,
     y,
     test_size=0.2,
     random_state=SEED,
-    stratify=y_bins
+    stratify=y_bins,
 )
 
-# create resamples ----
-adi_folds = RepeatedKFold(
-    n_splits=10,
-    n_repeats=3,
-    random_state=SEED
-)
+adi_folds = RepeatedKFold(n_splits=10, n_repeats=3, random_state=SEED)
 
-# model specification ----
 rf_spec = RandomForestRegressor(
     n_estimators=500,
     random_state=SEED,
-    n_jobs=-1
+    n_jobs=-1,
 )
 
-# hyperparameter grid ----
+n_feat = len(FEATURE_COLS)
+max_feat_opts = sorted({int(x) for x in np.round(np.linspace(2, n_feat, 6))})
+max_feat_opts = [m for m in max_feat_opts if 1 <= m <= n_feat]
+
 rf_grid = {
-    "max_features": np.round(np.linspace(2, 12, 6)).astype(int),
-    "min_samples_leaf": np.round(np.linspace(2, 40, 5)).astype(int)
+    "max_features": max_feat_opts,
+    "min_samples_leaf": np.round(np.linspace(2, 40, 5)).astype(int),
 }
 
-# tune model ----
 rf_tuned = GridSearchCV(
     estimator=rf_spec,
     param_grid=rf_grid,
     scoring="neg_root_mean_squared_error",
     cv=adi_folds,
     n_jobs=-1,
-    return_train_score=True
+    return_train_score=True,
 )
 
 rf_tuned.fit(X_train, y_train)
 
-# tuning results ----
 rf_tune_metrics = pd.DataFrame(rf_tuned.cv_results_)
 
 best_rf = rf_tuned.best_params_
 print("Best hyperparameters:")
 print(best_rf)
 
-# final model fit ----
-rf_test = rf_tuned.best_estimator_
+rf_model = rf_tuned.best_estimator_
 
-# predictions on test data ----
-y_pred = rf_test.predict(X_test)
+y_pred = rf_model.predict(X_test)
 
 rf_preds = X_test.copy()
 rf_preds.insert(0, "ADI", y_test.values)
@@ -117,27 +116,22 @@ rf_preds.insert(1, ".pred", y_pred)
 
 print(rf_preds.head())
 
-# combined test metrics table ----
 rf_test_metrics = pd.DataFrame({
     ".metric": ["rmse", "rsq", "mae"],
     ".estimator": ["standard", "standard", "standard"],
     ".estimate": [
         root_mean_squared_error(y_test, y_pred),
         r2_score(y_test, y_pred),
-        mean_absolute_error(y_test, y_pred)
-    ]
+        mean_absolute_error(y_test, y_pred),
+    ],
 })
 
 print(rf_test_metrics)
 
-# percentage of predictions within 10% of actual ADI ----
-within_10 = pd.DataFrame({
-    "prop": [np.mean(np.abs(y_pred - y_test) / np.abs(y_test) <= 0.10)]
-})
-
+rel_err = np.abs(y_pred - y_test.values) / np.maximum(np.abs(y_test.values), 1e-9)
+within_10 = pd.DataFrame({"prop": [float(np.mean(rel_err <= 0.10))]})
 print(within_10)
 
-# visual representation ----
 plt.figure(figsize=(7, 5))
 plt.scatter(y_test, y_pred, alpha=0.5)
 plt.axline((0, 0), slope=1, linestyle="--")
@@ -147,7 +141,6 @@ plt.title("Observed vs Predicted ADI (Random Forest)")
 plt.tight_layout()
 plt.show()
 
-# save visual ----
 plt.figure(figsize=(7, 5))
 plt.scatter(y_test, y_pred, alpha=0.5)
 plt.axline((0, 0), slope=1, linestyle="--")
@@ -157,7 +150,6 @@ plt.title("Observed vs Predicted ADI (Random Forest)")
 plt.tight_layout()
 plt.savefig(os.path.join(RESULTS_DIR, "visual.png"), dpi=300)
 
-# save results ----
 rf_tune_metrics.to_csv(os.path.join(RESULTS_DIR, "rf_tune_metrics.csv"), index=False)
 rf_preds.to_csv(os.path.join(RESULTS_DIR, "rf_preds.csv"), index=False)
 rf_test_metrics.to_csv(os.path.join(RESULTS_DIR, "rf_test_metrics.csv"), index=False)
@@ -166,5 +158,10 @@ within_10.to_csv(os.path.join(RESULTS_DIR, "within_10.csv"), index=False)
 with open(os.path.join(RESULTS_DIR, "best_rf.pkl"), "wb") as f:
     pickle.dump(best_rf, f)
 
-with open(os.path.join(RESULTS_DIR, "rf_test.pkl"), "wb") as f:
-    pickle.dump(rf_test, f)
+# Flask loads this with joblib — must be an estimator with .predict()
+joblib.dump(rf_model, SERVER_MODEL_PATH)
+print(f"Saved fitted model for API to: {SERVER_MODEL_PATH}")
+
+# Optional legacy duplicate under results/
+joblib.dump(rf_model, os.path.join(RESULTS_DIR, "rf_test.pkl"))
+print(f"Also saved copy to: {os.path.join(RESULTS_DIR, 'rf_test.pkl')}")

@@ -44,7 +44,14 @@ export type LayerMeta = {
 // Replace the existing MarkerPoint type with:
 export type MarkerPoint =
   | { id: string; x: number; y: number; type: 'school' | 'library'; existing?: false }
-  | { id: string; lat: number; lon: number; type: 'school' | 'library'; existing: true };
+  | {
+      id: string;
+      lat: number;
+      lon: number;
+      type: 'school' | 'library';
+      /** Baseline CPS/CPL (muted); user-added markers use false */
+      existing?: boolean;
+    };
 
 export const MAP_LAYER_ORDER: LayerMeta[] = [
   { id: 'adi', label: 'ADI', subtitle: 'Area Deprivation Index (higher = more deprived)', colorRamp: 'magma', unit: '', decimals: 1 },

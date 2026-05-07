@@ -89,7 +89,6 @@ type D3MapProps = {
   isDrawingMode: boolean;
   setIsDrawingMode: (v: boolean) => void;
   markers: MarkerPoint[];
-  setMarkers: (m: MarkerPoint[]) => void;
   isMarkerLayer: boolean;
   /** When true, render baseline + user school markers only on Schools layer. */
   showSchoolMarkers?: boolean;
@@ -97,6 +96,7 @@ type D3MapProps = {
   showLibraryMarkers?: boolean;
   markerType: 'school' | 'library' | null;
   onMarkerPlaced?: (lat: number, lon: number, type: 'school' | 'library') => void;
+  onMarkerRemoved?: (markerId: string) => void;
   onBikeTrailDrawn?: (coordinates: [number, number][]) => void;
 };
 
@@ -123,12 +123,12 @@ const D3Map = forwardRef<D3MapHandle, D3MapProps>(function D3Map(
   isDrawingMode,
   setIsDrawingMode,
   markers,
-  setMarkers,
   isMarkerLayer,
   showSchoolMarkers = false,
   showLibraryMarkers = false,
   markerType,
   onMarkerPlaced,
+  onMarkerRemoved,
   onBikeTrailDrawn,
   },
   ref,
@@ -176,9 +176,10 @@ const D3Map = forwardRef<D3MapHandle, D3MapProps>(function D3Map(
   const markerDrawList = useMemo(() => {
     const list: { marker: MarkerPoint; mx: number; my: number }[] = [];
     for (const marker of markersToDraw) {
-      const svgPos = marker.existing
-        ? projection([marker.lon, marker.lat])
-        : ([marker.x, marker.y] as [number, number]);
+      const svgPos =
+        'lat' in marker && 'lon' in marker
+          ? projection([marker.lon, marker.lat])
+          : ([marker.x, marker.y] as [number, number]);
       if (
         !svgPos ||
         !Number.isFinite(svgPos[0]) ||
@@ -397,10 +398,6 @@ const D3Map = forwardRef<D3MapHandle, D3MapProps>(function D3Map(
           const y = (e.clientY - rect.top - transform.y) / transform.k - 20;
           const withinBounds = selectedTractId ? isPointNearTract(x, y) : isPointOnMap(x, y);
           if (withinBounds) {
-            setMarkers([
-              ...markers,
-              { id: `${markerType}-${Date.now()}`, x, y, type: markerType },
-            ]);
             const lonLat = projection.invert?.([x, y]);
             if (lonLat && onMarkerPlaced) {
               onMarkerPlaced(lonLat[1], lonLat[0], markerType);
@@ -496,10 +493,6 @@ const D3Map = forwardRef<D3MapHandle, D3MapProps>(function D3Map(
                     const x = (e.clientX - rect.left - transform.x) / transform.k - 20;
                     const y = (e.clientY - rect.top - transform.y) / transform.k - 20;
                     if (isPointNearTract(x, y)) {
-                      setMarkers([
-                        ...markers,
-                        { id: `${markerType}-${Date.now()}`, x, y, type: markerType },
-                      ]);
                       const lonLat = projection.invert?.([x, y]);
                       if (lonLat && onMarkerPlaced) {
                         onMarkerPlaced(lonLat[1], lonLat[0], markerType);
@@ -590,19 +583,23 @@ const D3Map = forwardRef<D3MapHandle, D3MapProps>(function D3Map(
                 transform={`translate(${mx}, ${my})`}
                 style={{ opacity: marker.existing ? 0.45 : 1 }}
                 className={marker.existing ? 'pointer-events-none' : 'cursor-pointer'}
-                onClick={marker.existing ? undefined : (e) => {
-                  e.stopPropagation();
-                  setMarkers(markers.filter((m) => m.id !== marker.id));
-                }}
+                onClick={
+                  marker.existing || !onMarkerRemoved
+                    ? undefined
+                    : (e) => {
+                        e.stopPropagation();
+                        onMarkerRemoved(marker.id);
+                      }
+                }
               >
                 <title>
                   {marker.existing
                     ? marker.type === 'school'
-                      ? 'Schools (tract estimate)'
-                      : 'Libraries (tract estimate)'
+                      ? 'School (CPS location)'
+                      : 'Library (CPL location)'
                     : marker.type === 'school'
-                      ? 'Placed school'
-                      : 'Placed library'}
+                      ? 'Added school — click to remove'
+                      : 'Added library — click to remove'}
                 </title>
                 <circle
                   r={r}

@@ -3,9 +3,9 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Activity,
   History,
+  Pencil,
   TrendingUp,
   User,
-  Save,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as d3 from 'd3';
@@ -22,9 +22,16 @@ import {
 } from './mapLayers';
 import { useAuth } from './auth/AuthProvider';
 import {
+  addGeometryPoint,
   getSimulationFeatures,
   getSimulationGeometry,
-  recalculate,
+  getSimulation,
+  recalculateSliders,
+  recalculateWithGeometry,
+  removeGeometryPoint,
+  seedSchoolLibraryGeometry,
+  simulationGeometryToInput,
+  updateSimulationName,
 } from './simulations/simulationService';
 import type { GeometryInput, SimulationFeatureRow } from './simulations/simulationTypes';
 
@@ -93,6 +100,62 @@ function formatLayerValue(layerId: MapLayerId, v: number): string {
   const meta = layerMeta(layerId);
   const decimals = meta?.decimals ?? 1;
   return `${v.toFixed(decimals)}${meta?.unit ?? ''}`;
+}
+
+function geometryMarkerId(g: GeometryInput): string | null {
+  if (g.feature_type !== 'school' && g.feature_type !== 'library') return null;
+  if (g.dbId) return `db-${g.dbId}`;
+  if (g.clientKey) return `ck-${g.clientKey}`;
+  return null;
+}
+
+function markersFromGeometryItems(items: GeometryInput[]): MarkerPoint[] {
+  const out: MarkerPoint[] = [];
+  for (const g of items) {
+    if (g.feature_type !== 'school' && g.feature_type !== 'library') continue;
+    if (typeof g.lat !== 'number' || typeof g.lon !== 'number') continue;
+    if (!Number.isFinite(g.lat) || !Number.isFinite(g.lon)) continue;
+    const id = geometryMarkerId(g);
+    if (!id) continue;
+    out.push({
+      id,
+      lat: g.lat,
+      lon: g.lon,
+      type: g.feature_type,
+      existing: !g.userPlaced,
+    });
+  }
+  return out;
+}
+
+/**
+ * Library_Count / School_Density are replaced from point geometry on the server. Slider
+ * snapshots from before a placement would otherwise overwrite fresh spatial values (often
+ * making counts look like they dropped).
+ */
+function sliderOverridesForGeometryRecalc(
+  geoItems: GeometryInput[],
+  raw: Record<string, Record<string, number>>,
+): Record<string, Record<string, number>> {
+  const hasLibrary = geoItems.some((g) => g.feature_type === 'library');
+  const hasSchool = geoItems.some((g) => g.feature_type === 'school');
+  if (!hasLibrary && !hasSchool) return raw;
+
+  const out: Record<string, Record<string, number>> = {};
+  for (const [tid, cols] of Object.entries(raw)) {
+    const copy = { ...cols };
+    if (hasLibrary) delete copy.Library_Count;
+    if (hasSchool) delete copy.School_Density;
+    if (Object.keys(copy).length > 0) out[tid] = copy;
+  }
+  return out;
+}
+
+function geometryDominatedAdjustmentKeys(geoItems: GeometryInput[]): MapLayerId[] {
+  const keys: MapLayerId[] = [];
+  if (geoItems.some((g) => g.feature_type === 'library')) keys.push('Library_Count');
+  if (geoItems.some((g) => g.feature_type === 'school')) keys.push('School_Density');
+  return keys;
 }
 
 function FeatureHistogram({
@@ -188,7 +251,6 @@ export default function SimulatorPage() {
   const isBikeMilesLayer = mapLayerId === 'Bike_Miles';
   const [isDrawingMode, setIsDrawingMode] = useState(false);
 
-  const [markers, setMarkers] = useState<MarkerPoint[]>([]);
   const isSchoolLayer = mapLayerId === 'School_Density';
   const isLibraryLayer = mapLayerId === 'Library_Count';
   const isMarkerLayer = isSchoolLayer || isLibraryLayer;
@@ -220,13 +282,79 @@ export default function SimulatorPage() {
   const [isRecalculating, setIsRecalculating] = useState(false);
   const [recalcError, setRecalcError] = useState<string | null>(null);
 
+  const [simulationName, setSimulationName] = useState<string | null>(null);
+  const [isEditingSimulationName, setIsEditingSimulationName] = useState(false);
+  const [simulationNameDraft, setSimulationNameDraft] = useState('');
+  const [simulationNameError, setSimulationNameError] = useState<string | null>(null);
+  const [isSavingSimulationName, setIsSavingSimulationName] = useState(false);
+  const simulationNameInputRef = useRef<HTMLInputElement>(null);
+
   // Geometry items accumulated for the current simulation (in lat/lon)
   const [geometryItems, setGeometryItems] = useState<GeometryInput[]>([]);
+  const markers = useMemo(() => markersFromGeometryItems(geometryItems), [geometryItems]);
 
   const selectedTractIdRef = useRef<string | null>(selectedTractId);
   const layerAdjustmentsRef = useRef(layerAdjustments);
   selectedTractIdRef.current = selectedTractId;
   layerAdjustmentsRef.current = layerAdjustments;
+
+  useEffect(() => {
+    if (!simulationId) {
+      setSimulationName(null);
+      setIsEditingSimulationName(false);
+      return;
+    }
+    let mounted = true;
+    getSimulation(simulationId)
+      .then((s) => {
+        if (mounted && s) setSimulationName(s.name);
+      })
+      .catch(() => {
+        if (mounted) setSimulationName(null);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [simulationId]);
+
+  useEffect(() => {
+    if (isEditingSimulationName) {
+      const el = simulationNameInputRef.current;
+      el?.focus();
+      el?.select();
+    }
+  }, [isEditingSimulationName]);
+
+  const beginRenameSimulation = useCallback(() => {
+    setSimulationNameDraft(simulationName ?? 'Untitled simulation');
+    setSimulationNameError(null);
+    setIsEditingSimulationName(true);
+  }, [simulationName]);
+
+  const cancelRenameSimulation = useCallback(() => {
+    setIsEditingSimulationName(false);
+    setSimulationNameError(null);
+  }, []);
+
+  const saveRenameSimulation = useCallback(async () => {
+    if (!simulationId) return;
+    const next = simulationNameDraft.trim();
+    if (!next) {
+      setSimulationNameError('Name cannot be empty.');
+      return;
+    }
+    setIsSavingSimulationName(true);
+    setSimulationNameError(null);
+    try {
+      const updated = await updateSimulationName(simulationId, next);
+      setSimulationName(updated.name);
+      setIsEditingSimulationName(false);
+    } catch (err) {
+      setSimulationNameError(err instanceof Error ? err.message : 'Could not save name.');
+    } finally {
+      setIsSavingSimulationName(false);
+    }
+  }, [simulationId, simulationNameDraft]);
 
   const snapshotSliderOverrides = useCallback((): Record<string, Record<string, number>> => {
     const tid = selectedTractIdRef.current;
@@ -243,6 +371,31 @@ export default function SimulatorPage() {
     return { [normalizedTractId]: cleaned };
   }, []);
 
+  const applySimulationFeatures = useCallback((rows: SimulationFeatureRow[]) => {
+    setTractFeatures((prev) => {
+      if (!prev) return prev;
+      const next = new Map(prev);
+      for (const row of rows) {
+        const tid = normalizeTractId(row.census_tract);
+        const prevRow = next.get(tid);
+        const updated: Record<string, number> = { ...(prevRow ?? {}) as Record<string, number> };
+        if (row.tree_canopy != null) updated['Tree_Canopy'] = row.tree_canopy;
+        if (row.affordable_housing != null) updated['Affordable_Housing'] = row.affordable_housing;
+        if (row.parks != null) updated['Parks'] = row.parks;
+        if (row.transit_stop != null) updated['Transit_Stop'] = row.transit_stop;
+        if (row.bike_miles != null) updated['Bike_Miles'] = row.bike_miles;
+        if (row.wifi_hotspots != null) updated['Wifi_Hotspots'] = row.wifi_hotspots;
+        if (row.school_density != null) updated['School_Density'] = row.school_density;
+        if (row.library_count != null) updated['Library_Count'] = row.library_count;
+        if (row.small_business != null) updated['Small_Business'] = row.small_business;
+        if (row.food_access != null) updated['Food_Access'] = row.food_access;
+        if (row.predicted_adi != null) updated['adi'] = row.predicted_adi;
+        next.set(tid, updated);
+      }
+      return next;
+    });
+  }, []);
+
   /** Map + histogram use this: baseline/API rows plus pending slider values for the selected tract. */
   const displayTractFeatures = useMemo(() => {
     if (!tractFeatures) return null;
@@ -256,9 +409,9 @@ export default function SimulatorPage() {
     const base = next.get(tid);
     if (!base) return tractFeatures;
 
-    const merged: Record<string, number> = { ...base };
+    const merged: Record<string, number> = { ...(base as Record<string, number>) };
     for (const [k, v] of adjEntries) {
-      merged[k] = v;
+      merged[k] = v as number;
     }
     next.set(tid, merged);
     return next;
@@ -310,61 +463,7 @@ export default function SimulatorPage() {
       });
   }, []);
 
-// Seed existing school/library markers from baseline CSV
-useEffect(() => {
-  if (!tractFeatures || !geoData) return;
-
-  const existingMarkers: MarkerPoint[] = [];
-
-  geoData.features.forEach((feature: any) => {
-    const tractId = tractIdFromProps(feature?.properties ?? {});
-    const row = tractFeatures.get(tractId);
-    if (!row) return;
-
-    const geom = feature.geometry;
-    const ring =
-      geom?.type === 'Polygon'
-        ? geom.coordinates[0]
-        : geom?.type === 'MultiPolygon'
-        ? geom.coordinates[0][0]
-        : null;
-    if (!ring) return;
-
-    const lons = ring.map((c: number[]) => c[0]);
-    const lats = ring.map((c: number[]) => c[1]);
-    const cLon = lons.reduce((a: number, b: number) => a + b, 0) / lons.length;
-    const cLat = lats.reduce((a: number, b: number) => a + b, 0) / lats.length;
-
-    const schoolCount = Math.max(0, Math.round(Number(row['School_Density']) || 0));
-    for (let i = 0; i < schoolCount; i++) {
-      existingMarkers.push({
-        id: `existing-school-${tractId}-${i}`,
-        lat: cLat + (Math.random() - 0.5) * 0.004,
-        lon: cLon + (Math.random() - 0.5) * 0.004,
-        type: 'school',
-        existing: true,
-      });
-    }
-
-    const libCount = Math.max(0, Math.round(Number(row['Library_Count']) || 0));
-    for (let i = 0; i < libCount; i++) {
-      existingMarkers.push({
-        id: `existing-library-${tractId}-${i}`,
-        lat: cLat + (Math.random() - 0.5) * 0.004,
-        lon: cLon + (Math.random() - 0.5) * 0.004,
-        type: 'library',
-        existing: true,
-      });
-    }
-  });
-
-  setMarkers((prev) => [
-    ...existingMarkers,
-    ...prev.filter((m) => !m.existing), // keep any user-added markers
-  ]);
-}, [tractFeatures, geoData]);
-
-  // If simulationId present, load existing simulation features to overlay
+  // If simulationId present, load geometry/features from Supabase; seed CPS/libraries when empty.
   useEffect(() => {
     if (!simulationId) return;
     let isMounted = true;
@@ -378,16 +477,25 @@ useEffect(() => {
 
         if (!isMounted) return;
 
-        if (features.length > 0) {
+        let items = geoRows.map(simulationGeometryToInput);
+
+        const schoolCount = items.filter((g) => g.feature_type === 'school').length;
+        const libCount = items.filter((g) => g.feature_type === 'library').length;
+
+        if (schoolCount === 0 && libCount === 0) {
+          setIsRecalculating(true);
+          try {
+            const seeded = await seedSchoolLibraryGeometry(simulationId);
+            if (!isMounted) return;
+            items = seeded.geometry;
+            applySimulationFeatures(seeded.features);
+          } finally {
+            if (isMounted) setIsRecalculating(false);
+          }
+        } else if (features.length > 0) {
           applySimulationFeatures(features);
         }
 
-        const items: GeometryInput[] = geoRows.map((g) => ({
-          feature_type: g.featureType,
-          lat: g.lat ?? undefined,
-          lon: g.lon ?? undefined,
-          geometry: g.geometry ?? undefined,
-        }));
         setGeometryItems(items);
       } catch (err) {
         if (isMounted) {
@@ -397,36 +505,32 @@ useEffect(() => {
     })();
 
     return () => { isMounted = false; };
-  }, [simulationId]);
+  }, [simulationId, applySimulationFeatures]);
 
-  // Apply simulation_features rows to the tractFeatures map
-  const applySimulationFeatures = useCallback((rows: SimulationFeatureRow[]) => {
-    setTractFeatures((prev) => {
-      if (!prev) return prev;
-      const next = new Map(prev);
-      for (const row of rows) {
-        const tid = normalizeTractId(row.census_tract);
-        const existing = next.get(tid) ?? {};
-        const updated: Record<string, number> = { ...existing };
-        if (row.tree_canopy != null) updated['Tree_Canopy'] = row.tree_canopy;
-        if (row.affordable_housing != null) updated['Affordable_Housing'] = row.affordable_housing;
-        if (row.parks != null) updated['Parks'] = row.parks;
-        if (row.transit_stop != null) updated['Transit_Stop'] = row.transit_stop;
-        if (row.bike_miles != null) updated['Bike_Miles'] = row.bike_miles;
-        if (row.wifi_hotspots != null) updated['Wifi_Hotspots'] = row.wifi_hotspots;
-        if (row.school_density != null) updated['School_Density'] = row.school_density;
-        if (row.library_count != null) updated['Library_Count'] = row.library_count;
-        if (row.small_business != null) updated['Small_Business'] = row.small_business;
-        if (row.food_access != null) updated['Food_Access'] = row.food_access;
-        if (row.predicted_adi != null) updated['adi'] = row.predicted_adi;
-        next.set(tid, updated);
-      }
-      return next;
-    });
-  }, []);
+  // Slider-only path: no geometry payload; server merges overrides into saved features (fast).
+  const triggerRecalculateSliders = useCallback(async (
+    sliderOverrides: Record<string, Record<string, number>>,
+  ) => {
+    if (!simulationId) {
+      setRecalcError('No simulation selected. Create one from My Simulations first.');
+      return;
+    }
 
-  // Trigger recalculation via Flask API
-  const triggerRecalculate = useCallback(async (
+    setIsRecalculating(true);
+    setRecalcError(null);
+
+    try {
+      const { features } = await recalculateSliders(simulationId, sliderOverrides);
+      applySimulationFeatures(features);
+    } catch (err) {
+      setRecalcError(err instanceof Error ? err.message : 'Recalculation failed.');
+    } finally {
+      setIsRecalculating(false);
+    }
+  }, [simulationId, applySimulationFeatures]);
+
+  // Geometry changed: full POST body + replace simulation_geometry; applies sliders too.
+  const triggerRecalculateGeometry = useCallback(async (
     geoItems: GeometryInput[],
     sliderOverrides: Record<string, Record<string, number>>,
   ) => {
@@ -439,8 +543,28 @@ useEffect(() => {
     setRecalcError(null);
 
     try {
-      const features = await recalculate(simulationId, geoItems, sliderOverrides);
+      const overrides = sliderOverridesForGeometryRecalc(geoItems, sliderOverrides);
+      const { features, geometry } = await recalculateWithGeometry(
+        simulationId,
+        geoItems,
+        overrides,
+      );
+      setGeometryItems(geometry);
       applySimulationFeatures(features);
+      const dominated = geometryDominatedAdjustmentKeys(geoItems);
+      if (dominated.length > 0) {
+        setLayerAdjustments((prev) => {
+          const next = { ...prev };
+          let changed = false;
+          for (const k of dominated) {
+            if (k in next) {
+              delete next[k];
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+      }
     } catch (err) {
       setRecalcError(err instanceof Error ? err.message : 'Recalculation failed.');
     } finally {
@@ -448,15 +572,120 @@ useEffect(() => {
     }
   }, [simulationId, applySimulationFeatures]);
 
-  // Callback: marker placed on map (already in lat/lon from D3Map)
+  // Callback: marker placed — incremental POST /geometry_point (no bulk geometry replace).
   const handleMarkerPlaced = useCallback((lat: number, lon: number, type: 'school' | 'library') => {
+    if (!simulationId) {
+      setRecalcError('No simulation selected. Create one from My Simulations first.');
+      return;
+    }
+    const clientKey = crypto.randomUUID();
+    const optimistic: GeometryInput = {
+      feature_type: type,
+      lat,
+      lon,
+      clientKey,
+      userPlaced: true,
+    };
+    setGeometryItems((prev) => [...prev, optimistic]);
+    setIsRecalculating(true);
+    setRecalcError(null);
+
+    void (async () => {
+      try {
+        const overrides = sliderOverridesForGeometryRecalc(
+          [{ feature_type: type, lat, lon }],
+          snapshotSliderOverrides(),
+        );
+        const { features, geometry } = await addGeometryPoint(
+          simulationId,
+          { feature_type: type, lat, lon },
+          overrides,
+        );
+        setGeometryItems((prev) => {
+          const rest = prev.filter((g) => g.clientKey !== clientKey);
+          const incoming = geometry.map((row) => ({
+            ...row,
+            userPlaced: true,
+          }));
+          return [...rest, ...incoming];
+        });
+        applySimulationFeatures(features);
+        const dominated: MapLayerId[] =
+          type === 'library' ? ['Library_Count'] : ['School_Density'];
+        setLayerAdjustments((prev) => {
+          const next = { ...prev };
+          let changed = false;
+          for (const k of dominated) {
+            if (k in next) {
+              delete next[k];
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+      } catch (err) {
+        setGeometryItems((prev) => prev.filter((g) => g.clientKey !== clientKey));
+        setRecalcError(err instanceof Error ? err.message : 'Recalculation failed.');
+      } finally {
+        setIsRecalculating(false);
+      }
+    })();
+  }, [simulationId, applySimulationFeatures, snapshotSliderOverrides]);
+
+  const handleMarkerRemoved = useCallback((markerId: string) => {
+    if (!simulationId) {
+      setRecalcError('No simulation selected. Create one from My Simulations first.');
+      return;
+    }
+
+    if (!markerId.startsWith('db-')) {
+      setGeometryItems((prev) => prev.filter((g) => geometryMarkerId(g) !== markerId));
+      return;
+    }
+
+    const rowId = markerId.slice(3);
+    let removed: GeometryInput | undefined;
     setGeometryItems((prev) => {
-      const newItem: GeometryInput = { feature_type: type, lat, lon };
-      const updated = [...prev, newItem];
-      void triggerRecalculate(updated, snapshotSliderOverrides());
-      return updated;
+      removed = prev.find((g) => geometryMarkerId(g) === markerId);
+      return prev.filter((g) => geometryMarkerId(g) !== markerId);
     });
-  }, [triggerRecalculate, snapshotSliderOverrides]);
+
+    setIsRecalculating(true);
+    setRecalcError(null);
+
+    void (async () => {
+      try {
+        const { features } = await removeGeometryPoint(
+          simulationId,
+          rowId,
+          snapshotSliderOverrides(),
+        );
+        applySimulationFeatures(features);
+        if (removed?.feature_type === 'library') {
+          setLayerAdjustments((prev) => {
+            if (!('Library_Count' in prev)) return prev;
+            const next = { ...prev };
+            delete next.Library_Count;
+            return next;
+          });
+        } else if (removed?.feature_type === 'school') {
+          setLayerAdjustments((prev) => {
+            if (!('School_Density' in prev)) return prev;
+            const next = { ...prev };
+            delete next.School_Density;
+            return next;
+          });
+        }
+      } catch (err) {
+        if (removed) {
+          setGeometryItems((prev) => [...prev, removed]);
+        }
+        setRecalcError(err instanceof Error ? err.message : 'Recalculation failed.');
+      } finally {
+        setIsRecalculating(false);
+      }
+    })();
+  }, [simulationId, applySimulationFeatures, snapshotSliderOverrides]);
 
   // Callback: bike trail drawn (coordinates in [lon, lat] format)
   const handleBikeTrailDrawn = useCallback((coordinates: [number, number][]) => {
@@ -466,12 +695,12 @@ useEffect(() => {
         geometry: { type: 'LineString', coordinates },
       };
       const updated = [...prev, newItem];
-      void triggerRecalculate(updated, snapshotSliderOverrides());
+      void triggerRecalculateGeometry(updated, snapshotSliderOverrides());
       return updated;
     });
-  }, [triggerRecalculate, snapshotSliderOverrides]);
+  }, [triggerRecalculateGeometry, snapshotSliderOverrides]);
 
-  // When slider changes, trigger recalculate after a debounce
+  // When sliders move, debounce — sliders-only API (no geometry upload).
   const sliderTimerRef = useRef<ReturnType<typeof setTimeout>>();
   useEffect(() => {
     if (!selectedTractId || Object.keys(layerAdjustments).length === 0) return;
@@ -479,7 +708,7 @@ useEffect(() => {
 
     if (sliderTimerRef.current) clearTimeout(sliderTimerRef.current);
     sliderTimerRef.current = setTimeout(() => {
-      triggerRecalculate(geometryItems, snapshotSliderOverrides());
+      void triggerRecalculateSliders(snapshotSliderOverrides());
     }, 350);
 
     return () => { if (sliderTimerRef.current) clearTimeout(sliderTimerRef.current); };
@@ -487,8 +716,7 @@ useEffect(() => {
     layerAdjustments,
     selectedTractId,
     simulationId,
-    geometryItems,
-    triggerRecalculate,
+    triggerRecalculateSliders,
     snapshotSliderOverrides,
   ]);
 
@@ -609,23 +837,29 @@ useEffect(() => {
     <div className="min-h-screen flex flex-col">
       {/* Top Navigation */}
       <nav className="fixed top-0 w-full flex justify-between items-center px-6 h-16 bg-white/80 backdrop-blur-md border-b border-outline-variant/20 shadow-sm z-50">
-        <button
-          onClick={() => navigate('/')}
-          className="text-xl font-bold tracking-tighter text-primary font-headline hover:opacity-80 transition-opacity"
-        >
-          Policy Intel Chicago
-        </button>
-        <div className="flex items-center gap-4">
+        <div className="flex justify-start min-w-0">
           <button
+            type="button"
+            onClick={() => navigate('/')}
+            className="text-xl font-bold tracking-tighter text-primary font-headline hover:opacity-80 transition-opacity shrink-0 text-left"
+          >
+            Policy Intel Chicago
+          </button>
+        </div>
+
+        <div className="flex justify-end items-center gap-4 min-w-0">
+          <button
+            type="button"
             onClick={() => navigate('/my-simulations')}
-            className="text-sm font-semibold text-secondary hover:text-primary transition-colors flex items-center gap-1.5 mr-2"
+            className="text-sm font-semibold text-secondary hover:text-primary transition-colors flex items-center gap-1.5 shrink-0"
           >
             <History className="w-4 h-4" />
             My Simulations
           </button>
           <button
+            type="button"
             onClick={() => navigate(user ? '/profile' : '/auth')}
-            className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center hover:bg-primary/20 transition-colors cursor-pointer"
+            className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center hover:bg-primary/20 transition-colors cursor-pointer shrink-0"
             title={user ? 'Profile' : 'Sign in'}
           >
             <User className="w-4 h-4 text-primary" />
@@ -863,13 +1097,67 @@ useEffect(() => {
         </aside>
 
           <header className="mb-4">
-            <h1 className="text-2xl font-extrabold tracking-tight text-primary">
-              Simulation
-            </h1>
-            {!simulationId && (
-              <p className="text-sm text-secondary mt-1">
-                Create a simulation from My Simulations to enable recalculation.
-              </p>
+            {simulationId ? (
+              <>
+                {isEditingSimulationName ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      ref={simulationNameInputRef}
+                      type="text"
+                      value={simulationNameDraft}
+                      onChange={(e) => setSimulationNameDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') void saveRenameSimulation();
+                        if (e.key === 'Escape') cancelRenameSimulation();
+                      }}
+                      disabled={isSavingSimulationName}
+                      className="min-w-[12rem] max-w-full flex-1 px-3 py-1.5 text-2xl font-extrabold tracking-tight text-primary border border-outline-variant/40 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/30"
+                      aria-label="Simulation name"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void saveRenameSimulation()}
+                      disabled={isSavingSimulationName}
+                      className="shrink-0 px-3 py-1.5 text-sm font-bold rounded-lg bg-primary text-white hover:opacity-90 disabled:opacity-50"
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={cancelRenameSimulation}
+                      disabled={isSavingSimulationName}
+                      className="shrink-0 px-3 py-1.5 text-sm font-bold rounded-lg text-secondary hover:bg-surface-container-high"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 min-w-0">
+                    <h1 className="text-2xl font-extrabold tracking-tight text-primary truncate">
+                      {simulationName ?? 'Simulation'}
+                    </h1>
+                    <button
+                      type="button"
+                      onClick={beginRenameSimulation}
+                      className="shrink-0 p-1.5 rounded-lg text-secondary hover:bg-surface-container-high hover:text-primary transition-colors"
+                      title="Rename simulation"
+                      aria-label="Rename simulation"
+                    >
+                      <Pencil className="w-5 h-5" aria-hidden />
+                    </button>
+                  </div>
+                )}
+                {simulationNameError && (
+                  <p className="text-xs font-semibold text-error mt-1">{simulationNameError}</p>
+                )}
+              </>
+            ) : (
+              <>
+                <h1 className="text-2xl font-extrabold tracking-tight text-primary">Simulation</h1>
+                <p className="text-sm text-secondary mt-1">
+                  Create a simulation from My Simulations to enable recalculation.
+                </p>
+              </>
             )}
           </header>
 
@@ -897,12 +1185,12 @@ useEffect(() => {
                   isDrawingMode={isDrawingMode}
                   setIsDrawingMode={setIsDrawingMode}
                   markers={markers}
-                  setMarkers={setMarkers}
                   isMarkerLayer={isMarkerLayer}
                   showSchoolMarkers={isSchoolLayer}
                   showLibraryMarkers={isLibraryLayer}
                   markerType={isSchoolLayer ? 'school' : isLibraryLayer ? 'library' : null}
                   onMarkerPlaced={handleMarkerPlaced}
+                  onMarkerRemoved={handleMarkerRemoved}
                   onBikeTrailDrawn={handleBikeTrailDrawn}
                 />
               )}
@@ -981,7 +1269,7 @@ useEffect(() => {
                       setBikeMiles([]);
                       setGeometryItems((prev) => {
                         const next = prev.filter((g) => g.feature_type !== 'bike_trail');
-                        void triggerRecalculate(next, snapshotSliderOverrides());
+                        void triggerRecalculateGeometry(next, snapshotSliderOverrides());
                         return next;
                       });
                     }}
@@ -1004,10 +1292,11 @@ useEffect(() => {
                       type="button"
                       onClick={() => {
                         const ft = isSchoolLayer ? 'school' : 'library';
-                        setMarkers((m) => m.filter((p) => p.type !== ft || p.existing));
                         setGeometryItems((prev) => {
-                          const next = prev.filter((g) => g.feature_type !== ft);
-                          void triggerRecalculate(next, snapshotSliderOverrides());
+                          const next = prev.filter(
+                            (g) => g.feature_type !== ft || !g.userPlaced,
+                          );
+                          void triggerRecalculateGeometry(next, snapshotSliderOverrides());
                           return next;
                         });
                       }}

@@ -30,10 +30,63 @@ type FlaskFeatureRow = {
 
 type FlaskRecalculateResponse = {
   features: FlaskFeatureRow[];
+  geometry?: Record<string, unknown>[];
+  partial?: boolean;
 };
 
+/**
+ * Flask jsonify / Postgres DECIMAL values often arrive as JSON strings; Supabase JS may do the same.
+ */
+function finiteCoordinate(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const t = value.trim();
+    if (!t) return undefined;
+    const n = Number(t);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+/** Rows returned by Flask after persisting simulation_geometry */
+function mapApiGeometryRow(raw: Record<string, unknown>): GeometryInput {
+  const ft = raw.feature_type;
+  if (ft !== 'bike_trail' && ft !== 'park' && ft !== 'school' && ft !== 'library') {
+    throw new Error(`Unknown feature_type in geometry response: ${String(ft)}`);
+  }
+  return {
+    dbId: typeof raw.id === 'string' ? raw.id : String(raw.id),
+    feature_type: ft,
+    lat: finiteCoordinate(raw.lat),
+    lon: finiteCoordinate(raw.lon),
+    geometry: (raw.geometry as GeometryInput['geometry']) ?? undefined,
+    userPlaced: false,
+  };
+}
+
+export function simulationGeometryToInput(g: SimulationGeometry): GeometryInput {
+  return {
+    dbId: g.id,
+    feature_type: g.featureType,
+    lat: finiteCoordinate(g.lat),
+    lon: finiteCoordinate(g.lon),
+    geometry: g.geometry ?? undefined,
+    userPlaced: false,
+  };
+}
+
+function geometryPayloadForApi(items: GeometryInput[]): Omit<GeometryInput, 'dbId' | 'clientKey' | 'userPlaced'>[] {
+  return items.map(({ feature_type, lat, lon, geometry }) => ({
+    feature_type,
+    lat,
+    lon,
+    geometry,
+  }));
+}
+
 function toFiniteOrNull(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  const n = finiteCoordinate(value);
+  return n === undefined ? null : n;
 }
 
 function mapFlaskFeatureRow(row: FlaskFeatureRow): SimulationFeatureRow {
@@ -68,8 +121,8 @@ function mapGeometryRow(row: SimulationGeometryRow): SimulationGeometry {
     id: row.id,
     simulationId: row.simulation_id,
     featureType: row.feature_type,
-    lat: row.lat,
-    lon: row.lon,
+    lat: finiteCoordinate(row.lat) ?? null,
+    lon: finiteCoordinate(row.lon) ?? null,
     geometry: row.geometry,
     createdAt: row.created_at,
   };
@@ -97,6 +150,33 @@ export async function listSimulations(): Promise<Simulation[]> {
 
   if (error) throw error;
   return ((data ?? []) as SimulationRow[]).map(mapSimulationRow);
+}
+
+export async function getSimulation(id: string): Promise<Simulation | null> {
+  const { data, error } = await supabase
+    .from('simulations')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) return null;
+  return mapSimulationRow(data as SimulationRow);
+}
+
+export async function updateSimulationName(id: string, name: string): Promise<Simulation> {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('Name cannot be empty.');
+
+  const { data, error } = await supabase
+    .from('simulations')
+    .update({ name: trimmed })
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return mapSimulationRow(data as SimulationRow);
 }
 
 export async function deleteSimulation(id: string): Promise<void> {
@@ -128,17 +208,16 @@ export async function getSimulationGeometry(
   return ((data ?? []) as SimulationGeometryRow[]).map(mapGeometryRow);
 }
 
-export async function recalculate(
+/** Slider tweaks only: does not send geometry; server returns rows for overridden tracts only. */
+export async function recalculateSliders(
   simulationId: string,
-  geometry: GeometryInput[],
   sliderOverrides: SliderOverrides,
-): Promise<SimulationFeatureRow[]> {
+): Promise<{ features: SimulationFeatureRow[]; partial: true }> {
   const response = await fetch(`${FLASK_URL}/recalculate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       simulation_id: simulationId,
-      geometry,
       slider_overrides: sliderOverrides,
     }),
   });
@@ -151,6 +230,137 @@ export async function recalculate(
   }
 
   const result = (await response.json()) as FlaskRecalculateResponse;
-  const rows = Array.isArray(result.features) ? result.features : [];
-  return rows.map(mapFlaskFeatureRow);
+  const featRows = Array.isArray(result.features) ? result.features : [];
+  return {
+    features: featRows.map(mapFlaskFeatureRow),
+    partial: true,
+  };
+}
+
+/** Geometry changed (markers, bike trails, etc.): sends full geometry payload + optional sliders. */
+export async function recalculateWithGeometry(
+  simulationId: string,
+  geometry: GeometryInput[],
+  sliderOverrides: SliderOverrides,
+): Promise<{ features: SimulationFeatureRow[]; geometry: GeometryInput[]; partial: false }> {
+  const response = await fetch(`${FLASK_URL}/recalculate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      simulation_id: simulationId,
+      geometry: geometryPayloadForApi(geometry),
+      slider_overrides: sliderOverrides,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response
+      .json()
+      .catch(async () => ({ error: await response.text().catch(() => '') }));
+    throw new Error(err.error || `Recalculation failed (${response.status})`);
+  }
+
+  const result = (await response.json()) as FlaskRecalculateResponse;
+  const featRows = Array.isArray(result.features) ? result.features : [];
+  const geoRows = Array.isArray(result.geometry)
+    ? result.geometry.map((r) => mapApiGeometryRow(r))
+    : [];
+  return {
+    features: featRows.map(mapFlaskFeatureRow),
+    geometry: geoRows,
+    partial: false,
+  };
+}
+
+export async function addGeometryPoint(
+  simulationId: string,
+  payload: { feature_type: 'library' | 'school'; lat: number; lon: number },
+  sliderOverrides: SliderOverrides,
+): Promise<{ features: SimulationFeatureRow[]; geometry: GeometryInput[]; partial: true }> {
+  const response = await fetch(`${FLASK_URL}/geometry_point`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      simulation_id: simulationId,
+      feature_type: payload.feature_type,
+      lat: payload.lat,
+      lon: payload.lon,
+      slider_overrides: sliderOverrides,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response
+      .json()
+      .catch(async () => ({ error: await response.text().catch(() => '') }));
+    throw new Error(err.error || `Add point failed (${response.status})`);
+  }
+
+  const result = (await response.json()) as FlaskRecalculateResponse;
+  const featRows = Array.isArray(result.features) ? result.features : [];
+  const geoRows = Array.isArray(result.geometry)
+    ? result.geometry.map((r) => mapApiGeometryRow(r))
+    : [];
+  return {
+    features: featRows.map(mapFlaskFeatureRow),
+    geometry: geoRows,
+    partial: true,
+  };
+}
+
+export async function removeGeometryPoint(
+  simulationId: string,
+  geometryRowId: string,
+  sliderOverrides: SliderOverrides,
+): Promise<{ features: SimulationFeatureRow[]; partial: true }> {
+  const response = await fetch(`${FLASK_URL}/geometry_point/remove`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      simulation_id: simulationId,
+      id: geometryRowId,
+      slider_overrides: sliderOverrides,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response
+      .json()
+      .catch(async () => ({ error: await response.text().catch(() => '') }));
+    throw new Error(err.error || `Remove point failed (${response.status})`);
+  }
+
+  const result = (await response.json()) as FlaskRecalculateResponse;
+  const featRows = Array.isArray(result.features) ? result.features : [];
+  return {
+    features: featRows.map(mapFlaskFeatureRow),
+    partial: true,
+  };
+}
+
+export async function seedSchoolLibraryGeometry(
+  simulationId: string,
+): Promise<{ features: SimulationFeatureRow[]; geometry: GeometryInput[] }> {
+  const response = await fetch(`${FLASK_URL}/seed_school_library_geometry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ simulation_id: simulationId }),
+  });
+
+  if (!response.ok) {
+    const err = await response
+      .json()
+      .catch(async () => ({ error: await response.text().catch(() => '') }));
+    throw new Error(err.error || `Seed geometry failed (${response.status})`);
+  }
+
+  const result = (await response.json()) as FlaskRecalculateResponse;
+  const featRows = Array.isArray(result.features) ? result.features : [];
+  const geoRows = Array.isArray(result.geometry)
+    ? result.geometry.map((r) => mapApiGeometryRow(r))
+    : [];
+  return {
+    features: featRows.map(mapFlaskFeatureRow),
+    geometry: geoRows,
+  };
 }

@@ -33,6 +33,20 @@ FEATURE_COLS = [
     "Tract_Area_SqMi", "Population",
 ]
 
+# simulation_features table columns (snake_case) -> FEATURE_COLS (excluding area/population)
+_DB_ROW_TO_FEATURE_COL = (
+    ("tree_canopy", "Tree_Canopy"),
+    ("affordable_housing", "Affordable_Housing"),
+    ("parks", "Parks"),
+    ("transit_stop", "Transit_Stop"),
+    ("bike_miles", "Bike_Miles"),
+    ("wifi_hotspots", "Wifi_Hotspots"),
+    ("school_density", "School_Density"),
+    ("library_count", "Library_Count"),
+    ("small_business", "Small_Business"),
+    ("food_access", "Food_Access"),
+)
+
 
 def normalize_census_tract(val) -> str:
     """Canonical tract id strings so CSV ints match GeoJSON/frontend string ids."""
@@ -179,6 +193,12 @@ class TractEngine:
             - geometry: GeoJSON dict for line/polygon features
         slider_overrides : dict mapping census_tract -> {column: value}
 
+        Notes
+        -----
+        School and library layers: if the request includes one or more school (or library)
+        points, tract-level densities are replaced from those points only (baseline CSV values
+        for that layer are ignored). Bike trails and parks remain additive deltas on baseline.
+
         Returns
         -------
         List of 791 dicts, one per tract, with all feature columns + predicted_adi.
@@ -192,23 +212,21 @@ class TractEngine:
 
         if libraries:
             delta = self._count_points_buffered(libraries, LIBRARY_BUFFER_FT)
-            for tract_id, count in delta.items():
+            for tract_id in self.tract_ids:
+                count = int(delta.get(tract_id, 0))
                 pop_k = self.pop_map.get(tract_id, POP_FLOOR) / 1000
-                density_add = (count / pop_k) * 10
+                density = (count / pop_k) * 10
                 mask = features_df["census_tract"] == tract_id
-                features_df.loc[mask, "Library_Count"] = (
-                    features_df.loc[mask, "Library_Count"].values[0] + density_add
-                )
+                features_df.loc[mask, "Library_Count"] = density
 
         if schools:
             delta = self._count_points_buffered(schools, SCHOOL_BUFFER_FT)
-            for tract_id, count in delta.items():
+            for tract_id in self.tract_ids:
+                count = int(delta.get(tract_id, 0))
                 pop_k = self.pop_map.get(tract_id, POP_FLOOR) / 1000
-                density_add = (count / pop_k) * 10
+                density = (count / pop_k) * 10
                 mask = features_df["census_tract"] == tract_id
-                features_df.loc[mask, "School_Density"] = (
-                    features_df.loc[mask, "School_Density"].values[0] + density_add
-                )
+                features_df.loc[mask, "School_Density"] = density
 
         if bike_trails:
             delta = self._line_miles_buffered(bike_trails, BIKE_BUFFER_FT)
@@ -246,6 +264,65 @@ class TractEngine:
         result = []
         for _, row in features_df.iterrows():
             d = {"census_tract": row["census_tract"]}
+            for col in FEATURE_COLS:
+                d[col.lower()] = round(float(row[col]), 4) if pd.notna(row[col]) else None
+            d["predicted_adi"] = round(float(row["predicted_adi"]), 2) if pd.notna(row["predicted_adi"]) else None
+            result.append(d)
+
+        return result
+
+    def recalculate_sliders_only(
+        self,
+        saved_feature_rows: list[dict],
+        slider_overrides: dict[str, dict[str, float]],
+    ) -> list[dict]:
+        """
+        Fast path: merge saved simulation_features onto baseline area/population, apply slider
+        overrides, re-predict ADI. Skips all geometry / spatial work.
+
+        Returns only rows for census tracts present in slider_overrides.
+        """
+        if not slider_overrides:
+            return []
+
+        df = self.baseline[["census_tract"] + FEATURE_COLS].copy()
+
+        by_tid: dict[str, dict] = {}
+        for r in saved_feature_rows:
+            tid = normalize_census_tract(r.get("census_tract"))
+            if tid:
+                by_tid[tid] = r
+
+        for i in df.index:
+            tid = df.at[i, "census_tract"]
+            sr = by_tid.get(tid)
+            if not sr:
+                continue
+            for db_k, col in _DB_ROW_TO_FEATURE_COL:
+                val = sr.get(db_k)
+                if val is not None and pd.notna(val):
+                    df.at[i, col] = float(val)
+
+        for tract_id_raw, overrides in slider_overrides.items():
+            tid = normalize_census_tract(tract_id_raw)
+            if not tid:
+                continue
+            mask = df["census_tract"] == tid
+            if not mask.any():
+                continue
+            for col, value in overrides.items():
+                if col in FEATURE_COLS:
+                    df.loc[mask, col] = value
+
+        df["predicted_adi"] = self._predict_adi(df)
+
+        affected = {normalize_census_tract(k) for k in slider_overrides.keys()}
+        result = []
+        for _, row in df.iterrows():
+            tid = row["census_tract"]
+            if tid not in affected:
+                continue
+            d = {"census_tract": tid}
             for col in FEATURE_COLS:
                 d[col.lower()] = round(float(row[col]), 4) if pd.notna(row[col]) else None
             d["predicted_adi"] = round(float(row["predicted_adi"]), 2) if pd.notna(row["predicted_adi"]) else None

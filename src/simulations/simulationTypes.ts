@@ -54,6 +54,12 @@ export type GeometryInput = {
   lat?: number;
   lon?: number;
   geometry?: GeoJSON.LineString | GeoJSON.Polygon;
+  /** Present after loading from simulation_geometry */
+  dbId?: string;
+  /** Client-only until /recalculate persists rows */
+  clientKey?: string;
+  /** True when placed via map click; seeded CPS/library baseline omits this */
+  userPlaced?: boolean;
 };
 
 export type SliderOverrides = Record<string, Record<string, number>>;

@@ -19,6 +19,7 @@ FEATURE_COLS = [
     "Tree_Canopy", "Affordable_Housing", "Parks", "Transit_Stop",
     "Bike_Miles", "Wifi_Hotspots", "School_Density", "Library_Count",
     "Small_Business", "Food_Access",
+    "Tract_Area_SqMi", "Population",
 ]
 TARGET_COL = "adi"
 

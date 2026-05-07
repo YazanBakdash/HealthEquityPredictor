@@ -34,6 +34,39 @@ CORS(
 _supabase: Client | None = None
 _engine = None
 
+# Baseline CSV supplies these for inference; do not persist to simulation_features.
+_SIMULATION_FEATURES_SKIP_KEYS = frozenset({"tract_area_sqmi", "population"})
+
+# Must match unique constraint simulation_features (simulation_id, census_tract).
+_SIMULATION_FEATURES_ON_CONFLICT = "simulation_id,census_tract"
+
+
+def _dedupe_features_by_tract(features: list[dict]) -> list[dict]:
+    """One row per tract; last wins. Keeps DB inserts safe if callers duplicate."""
+    by_tract: dict[str, dict] = {}
+    for f in features:
+        tid = str(f.get("census_tract", "")).strip()
+        if tid.endswith(".0"):
+            tid = tid[:-2]
+        if not tid:
+            continue
+        by_tract[tid] = f
+    return [by_tract[k] for k in sorted(by_tract.keys())]
+
+
+def _rows_for_simulation_features(simulation_id: str, batch: list[dict]) -> list[dict]:
+    rows = []
+    for f in batch:
+        row = {"simulation_id": simulation_id}
+        row.update({k: v for k, v in f.items() if k not in _SIMULATION_FEATURES_SKIP_KEYS})
+        ct = row.get("census_tract")
+        if ct is not None:
+            row["census_tract"] = str(ct).strip()
+            if row["census_tract"].endswith(".0"):
+                row["census_tract"] = row["census_tract"][:-2]
+        rows.append(row)
+    return rows
+
 
 def _supabase_url() -> str:
     return (
@@ -104,7 +137,7 @@ def recalculate():
     slider_overrides = data.get("slider_overrides", {})
 
     engine = get_engine()
-    features = engine.recalculate(geometry_items, slider_overrides)
+    features = _dedupe_features_by_tract(engine.recalculate(geometry_items, slider_overrides))
 
     sb = get_supabase()
 
@@ -126,12 +159,11 @@ def recalculate():
     batch_size = 200
     for i in range(0, len(features), batch_size):
         batch = features[i:i + batch_size]
-        rows = []
-        for f in batch:
-            row = {"simulation_id": simulation_id}
-            row.update(f)
-            rows.append(row)
-        sb.table("simulation_features").insert(rows).execute()
+        rows = _rows_for_simulation_features(simulation_id, batch)
+        sb.table("simulation_features").upsert(
+            rows,
+            on_conflict=_SIMULATION_FEATURES_ON_CONFLICT,
+        ).execute()
 
     return jsonify({"features": features})
 

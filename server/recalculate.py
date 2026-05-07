@@ -5,6 +5,8 @@ when user-placed geometry or slider overrides are provided.
 """
 from __future__ import annotations
 import json
+import math
+import numbers
 import os
 from pathlib import Path
 
@@ -28,7 +30,32 @@ FEATURE_COLS = [
     "Tree_Canopy", "Affordable_Housing", "Parks", "Transit_Stop",
     "Bike_Miles", "Wifi_Hotspots", "School_Density", "Library_Count",
     "Small_Business", "Food_Access",
+    "Tract_Area_SqMi", "Population",
 ]
+
+
+def normalize_census_tract(val) -> str:
+    """Canonical tract id strings so CSV ints match GeoJSON/frontend string ids."""
+    if val is None:
+        return ""
+    try:
+        if pd.isna(val):
+            return ""
+    except TypeError:
+        pass
+    if isinstance(val, float):
+        if not math.isfinite(val):
+            return ""
+        iv = int(val)
+        return str(iv) if val == iv else str(val).strip()
+    if isinstance(val, numbers.Integral):
+        return str(int(val))
+    s = str(val).strip()
+    if not s:
+        return ""
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s
 
 
 class TractEngine:
@@ -53,15 +80,57 @@ class TractEngine:
             if self.model_path.is_file():
                 import joblib
 
-                self._sklearn_model = joblib.load(self.model_path)
+                loaded = joblib.load(self.model_path)
+                try:
+                    self._sklearn_model = self._extract_predictor(loaded)
+                except ValueError as exc:
+                    # Do not hard-fail requests; fall back to baseline ADI if artifact is not a predictor.
+                    print(f"Warning: {exc}")
+                    self._sklearn_model = None
             else:
                 self._sklearn_model = None
         return self._sklearn_model
+
+    @staticmethod
+    def _extract_predictor(loaded_obj):
+        """
+        Accept either a direct estimator or a common training-artifact dictionary.
+        Returns an object exposing .predict(X), or raises ValueError with guidance.
+        """
+        if hasattr(loaded_obj, "predict"):
+            return loaded_obj
+
+        if isinstance(loaded_obj, dict):
+            # Common key names used in saved training artifacts
+            for key in ("model", "best_model", "estimator", "pipeline", "rf_model", "regressor"):
+                candidate = loaded_obj.get(key)
+                if hasattr(candidate, "predict"):
+                    return candidate
+
+            # Sometimes artifacts store folds/metadata and nest the model one level down
+            for value in loaded_obj.values():
+                if hasattr(value, "predict"):
+                    return value
+                if isinstance(value, dict):
+                    for nested in value.values():
+                        if hasattr(nested, "predict"):
+                            return nested
+
+            raise ValueError(
+                "Loaded model artifact is a dict but no estimator with .predict() was found. "
+                "Include a key like 'model'/'best_model'/'estimator' containing a sklearn regressor."
+            )
+
+        raise ValueError(
+            f"Loaded model object of type {type(loaded_obj).__name__} has no .predict(). "
+            "Provide a sklearn-compatible estimator or a dict wrapping one."
+        )
 
     def _load_baseline(self):
         """Load baseline CSV and tract boundaries (called once on startup)."""
         csv_path = self.root / "public" / "all_tract_features.csv"
         self.baseline = pd.read_csv(csv_path)
+        self.baseline["census_tract"] = self.baseline["census_tract"].map(normalize_census_tract)
         self.tract_ids = sorted(self.baseline["census_tract"].tolist())
 
         geojson_path = self.root / "public" / "census_tracts.json"
@@ -77,7 +146,10 @@ class TractEngine:
                 or props.get("GEOID")
                 or ""
             )
-            rows.append({"census_tract": tract_id, "geometry": shape(feature["geometry"])})
+            tid = normalize_census_tract(tract_id)
+            if not tid:
+                continue
+            rows.append({"census_tract": tid, "geometry": shape(feature["geometry"])})
 
         self.tracts_gdf = gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
         self.tracts_proj = self.tracts_gdf.to_crs(PROJECTED_CRS)
@@ -158,8 +230,11 @@ class TractEngine:
                     features_df.loc[mask, "Parks"].values[0] + density_add
                 )
 
-        for tract_id, overrides in slider_overrides.items():
-            mask = features_df["census_tract"] == tract_id
+        for tract_id_raw, overrides in slider_overrides.items():
+            tid = normalize_census_tract(tract_id_raw)
+            if not tid:
+                continue
+            mask = features_df["census_tract"] == tid
             if not mask.any():
                 continue
             for col, value in overrides.items():
@@ -236,7 +311,7 @@ class TractEngine:
 
     def _predict_adi(self, df: pd.DataFrame) -> pd.Series:
         """
-        Predict ADI from the 10 features using your trained model file.
+        Predict ADI from FEATURE_COLS using your trained model file.
         Falls back to baseline CSV `adi` when no model file is present.
         """
         model = self.sklearn_predictor()

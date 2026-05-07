@@ -22,6 +22,7 @@ import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_PATH = os.path.join(BASE_DIR, "data", "adi.csv")
+RESULTS_DIR = os.path.join(BASE_DIR, "results")
 
 adi = pd.read_csv(DATA_PATH)
 
@@ -154,16 +155,16 @@ plt.xlabel("Observed ADI")
 plt.ylabel("Predicted ADI")
 plt.title("Observed vs Predicted ADI (Random Forest)")
 plt.tight_layout()
-plt.savefig("results/visual.png", dpi=300)
+plt.savefig(os.path.join(RESULTS_DIR, "visual.png"), dpi=300)
 
 # save results ----
-# rf_tune_metrics.to_csv("results/rf_tune_metrics.csv", index=False)
-# rf_preds.to_csv("results/rf_preds.csv", index=False)
-# rf_test_metrics.to_csv("results/rf_test_metrics.csv", index=False)
-# within_10.to_csv("results/within_10.csv", index=False)
+rf_tune_metrics.to_csv(os.path.join(RESULTS_DIR, "rf_tune_metrics.csv"), index=False)
+rf_preds.to_csv(os.path.join(RESULTS_DIR, "rf_preds.csv"), index=False)
+rf_test_metrics.to_csv(os.path.join(RESULTS_DIR, "rf_test_metrics.csv"), index=False)
+within_10.to_csv(os.path.join(RESULTS_DIR, "within_10.csv"), index=False)
 
-with open("results/best_rf.pkl", "wb") as f:
+with open(os.path.join(RESULTS_DIR, "best_rf.pkl"), "wb") as f:
     pickle.dump(best_rf, f)
 
-with open("results/rf_test.pkl", "wb") as f:
+with open(os.path.join(RESULTS_DIR, "rf_test.pkl"), "wb") as f:
     pickle.dump(rf_test, f)

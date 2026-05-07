@@ -13,6 +13,9 @@ import { normalizeTractId } from '../tractId';
 const FLASK_URL =
   import.meta.env.VITE_FLASK_API_URL?.trim() || 'http://127.0.0.1:5000';
 
+/** PostgREST default row cap per request; simulation_geometry can exceed this. */
+const SUPABASE_PAGE_SIZE = 1000;
+
 type FlaskFeatureRow = {
   census_tract: string;
   tree_canopy?: number | null;
@@ -187,25 +190,45 @@ export async function deleteSimulation(id: string): Promise<void> {
 export async function getSimulationFeatures(
   simulationId: string,
 ): Promise<SimulationFeatureRow[]> {
-  const { data, error } = await supabase
-    .from('simulation_features')
-    .select('*')
-    .eq('simulation_id', simulationId);
+  const all: SimulationFeatureRow[] = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from('simulation_features')
+      .select('*')
+      .eq('simulation_id', simulationId)
+      .order('id', { ascending: true })
+      .range(from, from + SUPABASE_PAGE_SIZE - 1);
 
-  if (error) throw error;
-  return (data ?? []) as SimulationFeatureRow[];
+    if (error) throw error;
+    const batch = (data ?? []) as SimulationFeatureRow[];
+    all.push(...batch);
+    if (batch.length < SUPABASE_PAGE_SIZE) break;
+    from += SUPABASE_PAGE_SIZE;
+  }
+  return all;
 }
 
 export async function getSimulationGeometry(
   simulationId: string,
 ): Promise<SimulationGeometry[]> {
-  const { data, error } = await supabase
-    .from('simulation_geometry')
-    .select('*')
-    .eq('simulation_id', simulationId);
+  const all: SimulationGeometryRow[] = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from('simulation_geometry')
+      .select('*')
+      .eq('simulation_id', simulationId)
+      .order('id', { ascending: true })
+      .range(from, from + SUPABASE_PAGE_SIZE - 1);
 
-  if (error) throw error;
-  return ((data ?? []) as SimulationGeometryRow[]).map(mapGeometryRow);
+    if (error) throw error;
+    const batch = (data ?? []) as SimulationGeometryRow[];
+    all.push(...batch);
+    if (batch.length < SUPABASE_PAGE_SIZE) break;
+    from += SUPABASE_PAGE_SIZE;
+  }
+  return all.map(mapGeometryRow);
 }
 
 /** Slider tweaks only: does not send geometry; server returns rows for overridden tracts only. */

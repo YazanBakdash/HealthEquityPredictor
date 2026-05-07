@@ -39,7 +39,7 @@ export default function LandingPage() {
       {/* Navigation */}
       <nav className="fixed top-0 w-full flex justify-between items-center px-8 h-16 bg-white/80 backdrop-blur-md border-b border-outline-variant/20 z-50">
         <span className="text-xl font-bold tracking-tighter text-primary font-headline">
-          Policy Intel Chicago
+          PoliMap
         </span>
         <div className="flex items-center gap-4">
           <button
@@ -356,7 +356,7 @@ export default function LandingPage() {
       <footer className="py-8 px-6 border-t border-outline-variant/20">
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
           <span className="text-sm font-bold tracking-tighter text-primary font-headline">
-            Policy Intel Chicago
+            PoliMap
           </span>
           <span className="text-xs text-secondary">
             Built for IEEE &mdash; Health Equity Predictor

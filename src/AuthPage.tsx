@@ -65,7 +65,7 @@ export default function AuthPage() {
             onClick={() => navigate('/')}
             className="text-2xl font-bold tracking-tighter text-white font-headline hover:opacity-80 transition-opacity"
           >
-            Policy Intel Chicago
+            PoliMap
           </button>
         </div>
 
@@ -115,7 +115,7 @@ export default function AuthPage() {
 
           <div className="lg:hidden mb-8">
             <span className="text-xl font-bold tracking-tighter text-primary font-headline">
-              Policy Intel Chicago
+              PoliMap
             </span>
           </div>
 
@@ -125,7 +125,7 @@ export default function AuthPage() {
           <p className="text-secondary mb-8">
             {isLogin
               ? 'Sign in to access your simulations.'
-              : 'Get started with Policy Intel Chicago.'}
+              : 'Get started with PoliMap.'}
           </p>
 
           {/* Toggle */}

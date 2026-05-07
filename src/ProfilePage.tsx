@@ -27,7 +27,7 @@ export default function ProfilePage() {
           onClick={() => navigate('/')}
           className="text-xl font-bold tracking-tighter text-primary font-headline hover:opacity-80 transition-opacity"
         >
-          Policy Intel Chicago
+          PoliMap
         </button>
         <button
           onClick={() => navigate('/my-simulations')}
@@ -56,7 +56,7 @@ export default function ProfilePage() {
                 Profile
               </h1>
               <p className="text-secondary mt-1">
-                Manage your Policy Intel Chicago account.
+                Manage your PoliMap account.
               </p>
             </div>
           </div>

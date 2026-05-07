@@ -90,6 +90,8 @@ type D3MapProps = {
   setIsDrawingMode: (v: boolean) => void;
   markers: MarkerPoint[];
   isMarkerLayer: boolean;
+  /** When true on school/library layer, map clicks add POIs instead of selecting tracts. */
+  addPoiMode?: boolean;
   /** When true, render baseline + user school markers only on Schools layer. */
   showSchoolMarkers?: boolean;
   /** When true, render baseline + user library markers only on Libraries layer. */
@@ -124,6 +126,7 @@ const D3Map = forwardRef<D3MapHandle, D3MapProps>(function D3Map(
   setIsDrawingMode,
   markers,
   isMarkerLayer,
+  addPoiMode = false,
   showSchoolMarkers = false,
   showLibraryMarkers = false,
   markerType,
@@ -389,15 +392,16 @@ const D3Map = forwardRef<D3MapHandle, D3MapProps>(function D3Map(
       width={width}
       height={height}
       viewBox={`0 0 ${width} ${height}`}
-      className={`w-full h-full touch-none ${isDrawingMode ? 'cursor-crosshair' : 'cursor-move'}`}
+      className={`w-full h-full touch-none ${
+        isDrawingMode || (addPoiMode && isMarkerLayer) ? 'cursor-crosshair' : 'cursor-move'
+      }`}
       onClick={(e) => {
         if (e.target !== svgRef.current) return;
-        if (isMarkerLayer && markerType) {
+        if (isMarkerLayer && markerType && addPoiMode) {
           const rect = svgRef.current!.getBoundingClientRect();
           const x = (e.clientX - rect.left - transform.x) / transform.k - 20;
           const y = (e.clientY - rect.top - transform.y) / transform.k - 20;
-          const withinBounds = selectedTractId ? isPointNearTract(x, y) : isPointOnMap(x, y);
-          if (withinBounds) {
+          if (isPointOnMap(x, y)) {
             const lonLat = projection.invert?.([x, y]);
             if (lonLat && onMarkerPlaced) {
               onMarkerPlaced(lonLat[1], lonLat[0], markerType);
@@ -482,17 +486,19 @@ const D3Map = forwardRef<D3MapHandle, D3MapProps>(function D3Map(
                       ? 1
                       : 0.8
                 }
-                className="transition-colors duration-200 cursor-pointer hover:stroke-primary"
+                className={`transition-colors duration-200 hover:stroke-primary ${
+                  addPoiMode && isMarkerLayer ? 'cursor-crosshair' : 'cursor-pointer'
+                }`}
                 onMouseEnter={() => setHoveredTract(props)}
                 onMouseMove={(e) => setMousePos({ x: e.clientX, y: e.clientY })}
                 onMouseLeave={() => setHoveredTract(null)}
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (isMarkerLayer && markerType && selectedTractId) {
+                  if (addPoiMode && isMarkerLayer && markerType) {
                     const rect = svgRef.current!.getBoundingClientRect();
                     const x = (e.clientX - rect.left - transform.x) / transform.k - 20;
                     const y = (e.clientY - rect.top - transform.y) / transform.k - 20;
-                    if (isPointNearTract(x, y)) {
+                    if (isPointOnMap(x, y)) {
                       const lonLat = projection.invert?.([x, y]);
                       if (lonLat && onMarkerPlaced) {
                         onMarkerPlaced(lonLat[1], lonLat[0], markerType);
@@ -519,7 +525,7 @@ const D3Map = forwardRef<D3MapHandle, D3MapProps>(function D3Map(
             </>
             )}
 
-          {selectedTractId && (isMarkerLayer || isBikeMilesLayer) && (() => {
+          {selectedTractId && !addPoiMode && (isMarkerLayer || isBikeMilesLayer) && (() => {
             const selectedFeature = data.features.find(
               (f: any) => tractIdFromProps(f.properties) === selectedTractId
             );

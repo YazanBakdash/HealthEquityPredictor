@@ -331,19 +331,31 @@ class TractEngine:
         return result
 
     def _count_points_buffered(self, items: list[dict], buffer_ft: float) -> dict[str, int]:
-        """Count how many points fall in each tract's buffer."""
-        points = []
-        for item in items:
-            pt = Point(item["lon"], item["lat"])
-            points.append({"geometry": pt})
+        """
+        Count schools/libraries influencing each tract.
 
-        pts_gdf = gpd.GeoDataFrame(points, geometry="geometry", crs="EPSG:4326").to_crs(PROJECTED_CRS)
+        Each point increments every tract whose polygon lies within ``buffer_ft``
+        (projected CRS units — feet here): minimum distance from the point to the
+        tract polygon is at most ``buffer_ft``. So the tract containing the point is
+        included (distance 0), as are neighboring tracts whose geometry reaches into
+        the buffer radius around that school/library.
+        """
+        if not items:
+            return {}
+        points = [Point(item["lon"], item["lat"]) for item in items]
+        pts_gdf = gpd.GeoDataFrame(geometry=points, crs="EPSG:4326").to_crs(PROJECTED_CRS)
+        tracts = self.tracts_proj[["census_tract", "geometry"]].reset_index(drop=True)
 
-        buffered = self.tracts_proj[["census_tract", "geometry"]].copy()
-        buffered["geometry"] = buffered.geometry.buffer(buffer_ft)
-
-        joined = gpd.sjoin(buffered, pts_gdf, how="inner", predicate="intersects")
-        counts = joined.groupby("census_tract").size().to_dict()
+        counts: dict[str, int] = {}
+        eps = 1e-9
+        for _, pt_row in pts_gdf.iterrows():
+            pt = pt_row.geometry
+            dist_series = tracts.geometry.distance(pt)
+            hits = tracts.loc[dist_series <= buffer_ft + eps]
+            for tid_raw in hits["census_tract"]:
+                tid = normalize_census_tract(tid_raw)
+                if tid:
+                    counts[tid] = counts.get(tid, 0) + 1
         return counts
 
     def _line_miles_buffered(self, items: list[dict], buffer_ft: float) -> dict[str, float]:

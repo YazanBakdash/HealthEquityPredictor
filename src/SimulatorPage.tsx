@@ -250,10 +250,16 @@ export default function SimulatorPage() {
   const [bikeMiles, setBikeMiles] = useState<{x: number, y: number}[]>([]);
   const isBikeMilesLayer = mapLayerId === 'Bike_Miles';
   const [isDrawingMode, setIsDrawingMode] = useState(false);
+  /** On school/library layer: when on, map clicks place POIs; when off, clicks select tracts. */
+  const [addPoiMode, setAddPoiMode] = useState(false);
 
   const isSchoolLayer = mapLayerId === 'School_Density';
   const isLibraryLayer = mapLayerId === 'Library_Count';
   const isMarkerLayer = isSchoolLayer || isLibraryLayer;
+
+  useEffect(() => {
+    if (!isMarkerLayer) setAddPoiMode(false);
+  }, [isMarkerLayer]);
 
   const tractSliderCeilings = useMemo(() => {
     const m = new Map<MapLayerId, number>();
@@ -843,7 +849,7 @@ export default function SimulatorPage() {
             onClick={() => navigate('/')}
             className="text-xl font-bold tracking-tighter text-primary font-headline hover:opacity-80 transition-opacity shrink-0 text-left"
           >
-            Policy Intel Chicago
+            PoliMap
           </button>
         </div>
 
@@ -1186,6 +1192,7 @@ export default function SimulatorPage() {
                   setIsDrawingMode={setIsDrawingMode}
                   markers={markers}
                   isMarkerLayer={isMarkerLayer}
+                  addPoiMode={addPoiMode}
                   showSchoolMarkers={isSchoolLayer}
                   showLibraryMarkers={isLibraryLayer}
                   markerType={isSchoolLayer ? 'school' : isLibraryLayer ? 'library' : null}
@@ -1282,12 +1289,29 @@ export default function SimulatorPage() {
 
                 {isMarkerLayer && (
                   <>
-                    <div className="pointer-events-auto absolute top-14 right-4 z-20 px-3 py-1.5 rounded-lg text-[11px] font-bold shadow-md border bg-white/95 text-slate-700 border-slate-300">
-                      {selectedTractId
-                        ? (isSchoolLayer ? '🏫 Click map to add school' : '📚 Click map to add library')
-                        : (isSchoolLayer ? '🏫 Select a tract first' : '📚 Select a tract first')
+                    <button
+                      type="button"
+                      onClick={() => setAddPoiMode((v) => !v)}
+                      className={`pointer-events-auto absolute top-14 right-4 z-20 px-3 py-1.5 rounded-lg text-[11px] font-bold shadow-md border transition-colors ${
+                        addPoiMode
+                          ? 'bg-indigo-600 text-white border-indigo-700'
+                          : 'bg-white/95 text-slate-700 border-slate-300 hover:bg-slate-100'
+                      }`}
+                      aria-pressed={addPoiMode}
+                      title={
+                        addPoiMode
+                          ? 'Switch to selecting tracts on the map'
+                          : isSchoolLayer
+                            ? 'Add schools by clicking anywhere inside the city'
+                            : 'Add libraries by clicking anywhere inside the city'
                       }
-                    </div>
+                    >
+                      {addPoiMode
+                        ? 'Done adding'
+                        : isSchoolLayer
+                          ? 'Add school'
+                          : 'Add library'}
+                    </button>
                     <button
                       type="button"
                       onClick={() => {

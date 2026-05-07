@@ -101,7 +101,7 @@ export default function MySimulationsPage() {
           onClick={() => navigate('/')}
           className="text-xl font-bold tracking-tighter text-primary font-headline hover:opacity-80 transition-opacity"
         >
-          Policy Intel Chicago
+          PoliMap
         </button>
         <div className="flex items-center gap-3">
           <span className="hidden sm:block text-xs font-semibold text-secondary">

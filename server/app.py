@@ -43,6 +43,31 @@ _SIMULATION_FEATURES_SKIP_KEYS = frozenset({"tract_area_sqmi", "population"})
 # Must match unique constraint simulation_features (simulation_id, census_tract).
 _SIMULATION_FEATURES_ON_CONFLICT = "simulation_id,census_tract"
 
+# PostgREST / Supabase default max rows per request (often 1000). Geometry can exceed this
+# (schools + libraries + many bike segments), which silently drops newer rows from reads.
+_POSTGREST_PAGE_SIZE = 1000
+
+
+def _select_all_by_simulation_id(sb: Client, table: str, simulation_id: str) -> list[dict]:
+    """Fetch every row for a simulation_id, paginating past PostgREST row caps."""
+    all_rows: list[dict] = []
+    offset = 0
+    while True:
+        resp = (
+            sb.table(table)
+            .select("*")
+            .eq("simulation_id", simulation_id)
+            .order("id")
+            .range(offset, offset + _POSTGREST_PAGE_SIZE - 1)
+            .execute()
+        )
+        batch = resp.data or []
+        all_rows.extend(batch)
+        if len(batch) < _POSTGREST_PAGE_SIZE:
+            break
+        offset += _POSTGREST_PAGE_SIZE
+    return all_rows
+
 
 def _dedupe_features_by_tract(features: list[dict]) -> list[dict]:
     """One row per tract; last wins. Uses canonical tract ids to avoid 23505 duplicates."""
@@ -221,8 +246,7 @@ def _recalculate_after_geometry_mutation(
     Returns (changed_feature_rows, full_computed_features).
     """
     engine = get_engine()
-    saved_resp = sb.table("simulation_features").select("*").eq("simulation_id", simulation_id).execute()
-    saved_rows = saved_resp.data or []
+    saved_rows = _select_all_by_simulation_id(sb, "simulation_features", simulation_id)
 
     stored_rows = _fetch_simulation_geometry_rows(sb, simulation_id)
     engine_items = geometry_items_from_db_rows(stored_rows)
@@ -241,8 +265,7 @@ def _recalculate_after_geometry_mutation(
 
 
 def _fetch_simulation_geometry_rows(sb: Client, simulation_id: str) -> list[dict]:
-    stored = sb.table("simulation_geometry").select("*").eq("simulation_id", simulation_id).execute()
-    return stored.data or []
+    return _select_all_by_simulation_id(sb, "simulation_geometry", simulation_id)
 
 
 def _supabase_url() -> str:
@@ -318,8 +341,7 @@ def recalculate():
         if not slider_overrides:
             return jsonify({"error": "slider_overrides required when geometry is omitted"}), 400
 
-        saved_resp = sb.table("simulation_features").select("*").eq("simulation_id", simulation_id).execute()
-        saved_rows = saved_resp.data or []
+        saved_rows = _select_all_by_simulation_id(sb, "simulation_features", simulation_id)
 
         if len(saved_rows) == 0:
             stored_rows = _fetch_simulation_geometry_rows(sb, simulation_id)
@@ -401,18 +423,12 @@ def add_geometry_point():
 
     if not inserted:
         tol = 1e-7
-        fetched = (
-            sb.table("simulation_geometry")
-            .select("*")
-            .eq("simulation_id", simulation_id)
-            .eq("feature_type", feature_type)
-            .execute()
-        )
-        rows = fetched.data or []
+        rows = _fetch_simulation_geometry_rows(sb, simulation_id)
         matches = [
             r
             for r in rows
-            if _finite_float(r.get("lat")) is not None
+            if r.get("feature_type") == feature_type
+            and _finite_float(r.get("lat")) is not None
             and _finite_float(r.get("lon")) is not None
             and abs(_finite_float(r.get("lat")) - lat) < tol
             and abs(_finite_float(r.get("lon")) - lon) < tol
@@ -476,8 +492,7 @@ def seed_school_library_geometry():
         chunk = poi_rows[i : i + batch_size]
         sb.table("simulation_geometry").insert(chunk).execute()
 
-    stored = sb.table("simulation_geometry").select("*").eq("simulation_id", simulation_id).execute()
-    stored_rows = stored.data or []
+    stored_rows = _fetch_simulation_geometry_rows(sb, simulation_id)
     engine_items = geometry_items_from_db_rows(stored_rows)
     features = _dedupe_features_by_tract(engine.recalculate(engine_items, {}))
     _persist_simulation_features(sb, simulation_id, features)

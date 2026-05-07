@@ -5,26 +5,17 @@ import {
   School,
   TreePine,
   Bus,
+  Bike,
+  BookOpen,
   ArrowRight,
   User,
-  Sparkles,
-  BarChart3,
   Layers,
+  BarChart3,
+  FolderSync,
+  Sparkles,
 } from 'lucide-react';
 import { motion } from 'motion/react';
-import { INITIAL_POLICY_AREAS } from './constants';
 import { useAuth } from './auth/AuthProvider';
-
-const getIcon = (iconName: string, className = 'w-6 h-6') => {
-  switch (iconName) {
-    case 'Map': return <MapIcon className={className} />;
-    case 'MedicalServices': return <Activity className={className} />;
-    case 'School': return <School className={className} />;
-    case 'Forest': return <TreePine className={className} />;
-    case 'Bus': return <Bus className={className} />;
-    default: return <MapIcon className={className} />;
-  }
-};
 
 export default function LandingPage() {
   const navigate = useNavigate();
@@ -86,22 +77,23 @@ export default function LandingPage() {
           <div className="inline-flex items-center gap-2 bg-primary/5 border border-primary/10 rounded-full px-4 py-1.5 mb-8">
             <div className="w-2 h-2 rounded-full bg-success animate-pulse" />
             <span className="text-xs font-semibold text-primary">
-              AI-Powered Policy Simulation
+              Chicago census tracts · modeled ADI
             </span>
           </div>
 
           <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight text-primary font-headline leading-[1.1] mb-6">
-            Simulate Policy
+            Policy meets
             <br />
             <span className="bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
-              Impact on Health
+              neighborhood maps
             </span>
           </h1>
 
           <p className="text-lg text-secondary max-w-xl mx-auto mb-10 leading-relaxed">
-            Explore how policy changes across urban planning, public health,
-            education, environment, and transit affect health equity across
-            Chicago&rsquo;s census tracts.
+            PoliMap is an interactive map of Chicago where every tract links to real amenity and
+            built-environment data. Explore layered indicators, place schools and libraries, sketch
+            bike routes, adjust tract-level controls where supported, and see how a statistical model
+            updates predicted Area Deprivation Index (ADI) as you edit.
           </p>
 
           {user && (
@@ -115,7 +107,7 @@ export default function LandingPage() {
               onClick={() => navigate('/my-simulations')}
               className="px-8 py-3.5 bg-primary text-white rounded-xl font-bold shadow-lg shadow-primary/20 hover:shadow-xl hover:shadow-primary/30 hover:scale-[1.02] active:scale-95 transition-all flex items-center gap-2 text-base"
             >
-              Launch Simulator
+              Open simulator
               <ArrowRight className="w-4 h-4" />
             </button>
             {user && (
@@ -175,17 +167,17 @@ export default function LandingPage() {
                 <div className="flex items-center gap-2 text-primary">
                   <MapIcon className="w-4 h-4" />
                   <span className="text-xs font-headline font-bold">
-                    Interactive Census Tract Map
+                    Tract choropleth & layers
                   </span>
                 </div>
                 <p className="text-[10px] text-secondary mt-1">
-                  Live policy impact preview
+                  ADI, amenities, and infrastructure
                 </p>
               </div>
 
               <div className="absolute right-5 bottom-5 glass-panel rounded-xl border border-white/60 shadow-lg p-3">
                 <div className="text-[9px] font-bold text-secondary uppercase tracking-widest mb-2">
-                  ADI
+                  Modeled ADI
                 </div>
                 <div className="flex items-center gap-1.5">
                   {['#BA1A1A', '#E98D8D', '#AEC7F7', '#4EDEA3'].map((color) => (
@@ -223,11 +215,13 @@ export default function LandingPage() {
             className="text-center mb-16"
           >
             <h2 className="text-3xl md:text-4xl font-extrabold text-primary font-headline mb-4">
-              Data-Driven Policy Intelligence
+              What PoliMap does
             </h2>
-            <p className="text-secondary max-w-lg mx-auto leading-relaxed">
-              Understand how policy decisions ripple through communities using
-              real census data and predictive modeling.
+            <p className="text-secondary max-w-2xl mx-auto leading-relaxed">
+              The simulator ties together open tract-level features, seeded school and library
+              locations, optional geometry you draw on the map, and a recalculation pipeline that
+              refreshes tract outputs and ADI estimates—without claiming to predict individual health
+              outcomes.
             </p>
           </motion.div>
 
@@ -235,18 +229,18 @@ export default function LandingPage() {
             {[
               {
                 icon: <Layers className="w-6 h-6" />,
-                title: 'Census-Level Granularity',
-                desc: 'Simulate outcomes at the individual census-tract level across all of Chicago.',
+                title: 'Layered Chicago data',
+                desc: 'Choropleth views across hundreds of tracts: modeled ADI plus metrics such as tree canopy, parks, transit, bike infrastructure, Wi‑Fi hotspots, schools, libraries, housing, and small-business density—aligned to the same baseline dataset used in the app.',
               },
               {
                 icon: <Sparkles className="w-6 h-6" />,
-                title: 'Real-Time Predictions',
-                desc: 'Instantly see how adjusting parameters changes the Area Deprivation Index.',
+                title: 'Edit scenarios, rerun the model',
+                desc: 'Place schools or libraries, draw bike trails, and where the UI allows it adjust tract sliders; each change triggers a backend recalculation so mapped values and predicted ADI stay consistent with your scenario.',
               },
               {
-                icon: <BarChart3 className="w-6 h-6" />,
-                title: 'Equity-Focused Metrics',
-                desc: 'Outcomes are mapped to health equity indicators like life expectancy and ADI.',
+                icon: <FolderSync className="w-6 h-6" />,
+                title: 'Saved simulations',
+                desc: 'Signed-in users store scenarios in the cloud—geometry and tract-level results persist so you can reopen and iterate on a map later.',
               },
             ].map((item, i) => (
               <motion.div
@@ -272,7 +266,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Policy Areas */}
+      {/* Tools & data — replaces generic policy sliders */}
       <section className="py-24 px-6">
         <div className="max-w-5xl mx-auto">
           <motion.div
@@ -282,33 +276,68 @@ export default function LandingPage() {
             className="text-center mb-16"
           >
             <h2 className="text-3xl md:text-4xl font-extrabold text-primary font-headline mb-4">
-              Five Policy Dimensions
+              Inside the simulator
             </h2>
-            <p className="text-secondary max-w-lg mx-auto leading-relaxed">
-              Adjust parameters across key policy areas and see their influence
-              on community health outcomes.
+            <p className="text-secondary max-w-2xl mx-auto leading-relaxed">
+              These are the kinds of controls and data sources wired into the live map—not abstract
+              placeholder sliders.
             </p>
           </motion.div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {INITIAL_POLICY_AREAS.map((area, i) => (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            {[
+              {
+                icon: <Activity className="w-5 h-5" />,
+                title: 'ADI & tract features',
+                desc: 'Visualize modeled Area Deprivation Index alongside tract attributes derived from consolidated Chicago neighborhood datasets (tree canopy, parks, transit stops, affordability proxies, food access, and more).',
+              },
+              {
+                icon: (
+                  <span className="flex items-center gap-1">
+                    <School className="w-5 h-5" />
+                    <BookOpen className="w-5 h-5 -ml-1" />
+                  </span>
+                ),
+                title: 'Schools & public libraries',
+                desc: 'Baseline points come from seeded CPS and Chicago Public Library coordinates; you can add sites on the map so densities respect buffers used in the spatial engine.',
+              },
+              {
+                icon: <Bike className="w-5 h-5" />,
+                title: 'Bike trails & miles',
+                desc: 'Sketch routes on the Bike Miles layer to layer onto baseline bike and trail mileage; recalculation clips geometry to tracts using the same buffers as other linear features.',
+              },
+              {
+                icon: <Bus className="w-5 h-5" />,
+                title: 'Transit & connectivity',
+                desc: 'Explore transit-stop density and complementary layers (e.g. Wi‑Fi hotspots) as choropleths to compare mobility and digital access patterns tract by tract.',
+              },
+              {
+                icon: <TreePine className="w-5 h-5" />,
+                title: 'Environment & amenities',
+                desc: 'Tree canopy, parks, and related layers help illustrate green space and public amenity context next to modeled deprivation.',
+              },
+              {
+                icon: <BarChart3 className="w-5 h-5" />,
+                title: 'Tract-level tweaks',
+                desc: 'Where a layer exposes sliders on a selected tract, adjustments feed into the same recalculation path so histograms and legends reflect your overrides.',
+              },
+            ].map((item, i) => (
               <motion.div
-                key={area.id}
+                key={item.title}
                 initial={{ opacity: 0, y: 20 }}
                 whileInView={{ opacity: 1, y: 0 }}
                 viewport={{ once: true }}
-                transition={{ delay: i * 0.08 }}
+                transition={{ delay: i * 0.06 }}
                 className="bg-white rounded-xl p-6 border border-outline-variant/20 hover:shadow-lg hover:border-primary/20 transition-all group cursor-default"
               >
-                <div className="w-10 h-10 rounded-lg bg-primary/5 flex items-center justify-center mb-4 text-primary group-hover:bg-primary group-hover:text-white transition-all">
-                  {getIcon(area.icon)}
+                <div className="w-10 h-10 rounded-lg bg-primary/5 flex items-center justify-center mb-4 text-primary group-hover:bg-primary group-hover:text-white transition-all [&>span]:gap-0">
+                  {item.icon}
                 </div>
                 <h3 className="font-headline font-bold text-on-surface mb-2">
-                  {area.name}
+                  {item.title}
                 </h3>
                 <p className="text-sm text-secondary leading-relaxed">
-                  {area.parameters.length} adjustable parameters including{' '}
-                  {area.parameters.map((p) => p.name.toLowerCase()).join(', ')}.
+                  {item.desc}
                 </p>
               </motion.div>
             ))}
@@ -334,17 +363,17 @@ export default function LandingPage() {
             />
             <div className="relative z-10">
               <h2 className="text-3xl font-extrabold font-headline mb-4">
-                Ready to explore?
+                Try it on Chicago tracts
               </h2>
               <p className="text-white/70 mb-8 max-w-md mx-auto">
-                Start simulating policy impacts on health equity across
-                Chicago&rsquo;s neighborhoods.
+                Sign in to save simulations, or jump in and explore the map with seeded data and
+                instant recalculation.
               </p>
               <button
                 onClick={() => navigate('/my-simulations')}
                 className="px-8 py-3.5 bg-white text-primary rounded-xl font-bold hover:bg-white/90 transition-all inline-flex items-center gap-2"
               >
-                Get Started
+                Get started
                 <ArrowRight className="w-4 h-4" />
               </button>
             </div>
@@ -358,8 +387,9 @@ export default function LandingPage() {
           <span className="text-sm font-bold tracking-tighter text-primary font-headline">
             PoliMap
           </span>
-          <span className="text-xs text-secondary">
-            Built for IEEE &mdash; Health Equity Predictor
+          <span className="text-xs text-secondary text-center sm:text-right">
+            Research-oriented mapping tool · IEEE Health Equity context · Not a clinical or policy
+            decision system
           </span>
         </div>
       </footer>

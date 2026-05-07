@@ -71,21 +71,23 @@ export default function AuthPage() {
 
         <div className="relative z-10">
           <h2 className="text-4xl font-extrabold text-white font-headline leading-tight mb-4">
-            Data-driven insights
+            Save Chicago tract
             <br />
-            for healthier communities
+            scenarios on the cloud
           </h2>
           <p className="text-white/60 text-lg max-w-md">
-            Simulate, analyze, and understand how policy decisions affect health
-            equity across Chicago.
+            PoliMap combines choropleth layers (ADI, housing, canopy, transit,
+            schools, libraries, and more) with spatial edits and backend
+            recalculation—your account keeps simulations so you can pick up where
+            you left off.
           </p>
         </div>
 
-        <div className="relative z-10 flex gap-8">
+        <div className="relative z-10 flex gap-8 flex-wrap">
           {[
-            { value: '801', label: 'Census Tracts' },
-            { value: '5', label: 'Policy Areas' },
-            { value: '12', label: 'Parameters' },
+            { value: '~790', label: 'Census tracts' },
+            { value: '11', label: 'Map layers' },
+            { value: 'ADI', label: 'Modeled index' },
           ].map((stat) => (
             <div key={stat.label}>
               <div className="text-3xl font-extrabold text-white font-headline">
@@ -117,15 +119,18 @@ export default function AuthPage() {
             <span className="text-xl font-bold tracking-tighter text-primary font-headline">
               PoliMap
             </span>
+            <p className="text-sm text-secondary mt-2 leading-relaxed">
+              Chicago tract maps, layered equity metrics, and saved simulations.
+            </p>
           </div>
 
           <h1 className="text-3xl font-extrabold text-primary font-headline mb-2">
             {isLogin ? 'Welcome back' : 'Create account'}
           </h1>
-          <p className="text-secondary mb-8">
+          <p className="text-secondary mb-8 leading-relaxed">
             {isLogin
-              ? 'Sign in to access your simulations.'
-              : 'Get started with PoliMap.'}
+              ? 'Sign in to reopen saved maps—geometry, tract features, and modeled ADI stay linked to your workspace.'
+              : 'Create an account to store Chicago tract scenarios: placed schools and libraries, drawn bike routes, and recalculated layers.'}
           </p>
 
           {/* Toggle */}

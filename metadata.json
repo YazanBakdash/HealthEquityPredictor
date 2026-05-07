@@ -1,5 +1,5 @@
 {
   "name": "PoliMap",
-  "description": "A high-fidelity urban policy simulation dashboard for analyzing life expectancy outcomes in Chicago neighborhoods.",
+  "description": "Chicago census tract map for exploring neighborhood layers, placing schools and libraries, sketching bike trails, and updating modeled Area Deprivation Index (ADI) via saved simulations.",
   "requestFramePermissions": []
 }

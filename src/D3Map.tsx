@@ -2,6 +2,7 @@ import {
   forwardRef,
   useCallback,
   useEffect,
+  useId,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -142,6 +143,8 @@ const D3Map = forwardRef<D3MapHandle, D3MapProps>(function D3Map(
 ) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [transform, setTransform] = useState(d3.zoomIdentity);
+  /** Stable id for SVG fragment reference (useId may contain colons). */
+  const tractBikeClipId = `tract-bike-clip-${useId().replace(/:/g, '')}`;
 
   const projection = useMemo(() => {
     try {
@@ -439,6 +442,17 @@ const D3Map = forwardRef<D3MapHandle, D3MapProps>(function D3Map(
     >
       <g transform={transform.toString()}>
         <g transform="translate(20, 20)">
+          <defs>
+            <clipPath id={tractBikeClipId}>
+              {data.features.map((feature: any, i: number) => {
+                const tractId = tractIdFromProps(feature.properties) || String(i);
+                if (EXCLUDED_TRACTS.has(tractId)) return null;
+                const d = pathGenerator(feature);
+                if (!d) return null;
+                return <path key={`clip-${tractId}`} d={d} fill="#fff" />;
+              })}
+            </clipPath>
+          </defs>
           {showSatellite &&
             tiles.map((tile) => (
               <image
@@ -516,45 +530,45 @@ const D3Map = forwardRef<D3MapHandle, D3MapProps>(function D3Map(
             );
           })}
 
-          {/* Existing off-street bike trails */}
-          {isBikeMilesLayer && bikeTrailGeo?.features?.map((feature: any, i: number) => {
-            const d = pathGenerator(feature);
-            if (!d) return null;
-            return (
-              <path
-                key={`trail-${i}`}
-                d={d}
-                fill="none"
-                stroke="#86efac"
-                strokeWidth={1.5 / transform.k}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                opacity={0.7}
-                pointerEvents="none"
-              />
+          <g clipPath={`url(#${tractBikeClipId})`} pointerEvents="none">
+            {/* Existing off-street bike trails */}
+            {isBikeMilesLayer &&
+              bikeTrailGeo?.features?.map((feature: any, i: number) => {
+                const d = pathGenerator(feature);
+                if (!d) return null;
+                return (
+                  <path
+                    key={`trail-${i}`}
+                    d={d}
+                    fill="none"
+                    stroke="#86efac"
+                    strokeWidth={1.5 / transform.k}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    opacity={0.7}
+                  />
+                );
+              })}
 
-              
-            );
-          })}
-
-          {/* Existing on-street bike routes */}
-          {isBikeMilesLayer && bikeRouteGeo?.features?.map((feature: any, i: number) => {
-            const d = pathGenerator(feature);
-            if (!d) return null;
-            return (
-              <path
-                key={`route-${i}`}
-                d={d}
-                fill="none"
-                stroke="#fdba74"
-                strokeWidth={1 / transform.k}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                opacity={0.6}
-                pointerEvents="none"
-              />
-            );
-          })}
+            {/* Existing on-street bike routes */}
+            {isBikeMilesLayer &&
+              bikeRouteGeo?.features?.map((feature: any, i: number) => {
+                const d = pathGenerator(feature);
+                if (!d) return null;
+                return (
+                  <path
+                    key={`route-${i}`}
+                    d={d}
+                    fill="none"
+                    stroke="#86efac"
+                    strokeWidth={1.5 / transform.k}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    opacity={0.7}
+                  />
+                );
+              })}
+          </g>
 
           {isBikeMilesLayer && bikeMiles.length > 1 && (
             <>

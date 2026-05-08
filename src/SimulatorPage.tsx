@@ -1440,9 +1440,6 @@ useEffect(() => {
                           ? 'Loading tract feature layers...'
                           : 'Recalculating features...'}
                     </span>
-                    {isRecalculating && (
-                      <p className="text-xs text-secondary">This may take 5-15 seconds</p>
-                    )}
                   </div>
                 </motion.div>
               )}

@@ -100,6 +100,8 @@ type D3MapProps = {
   onMarkerPlaced?: (lat: number, lon: number, type: 'school' | 'library') => void;
   onMarkerRemoved?: (markerId: string) => void;
   onBikeTrailDrawn?: (coordinates: [number, number][]) => void;
+  bikeTrailGeo?: any;
+  bikeRouteGeo?: any;
 };
 
 /** Imperative helpers for SVG space aligned with the inner map group (`translate(20,20)` + zoom). */
@@ -133,6 +135,8 @@ const D3Map = forwardRef<D3MapHandle, D3MapProps>(function D3Map(
   onMarkerPlaced,
   onMarkerRemoved,
   onBikeTrailDrawn,
+  bikeRouteGeo,
+  bikeTrailGeo,
   },
   ref,
 ) {
@@ -508,6 +512,46 @@ const D3Map = forwardRef<D3MapHandle, D3MapProps>(function D3Map(
                   }
                   setSelectedTractId(tractId);
                 }}
+              />
+            );
+          })}
+
+          {/* Existing off-street bike trails */}
+          {isBikeMilesLayer && bikeTrailGeo?.features?.map((feature: any, i: number) => {
+            const d = pathGenerator(feature);
+            if (!d) return null;
+            return (
+              <path
+                key={`trail-${i}`}
+                d={d}
+                fill="none"
+                stroke="#86efac"
+                strokeWidth={1.5 / transform.k}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                opacity={0.7}
+                pointerEvents="none"
+              />
+
+              
+            );
+          })}
+
+          {/* Existing on-street bike routes */}
+          {isBikeMilesLayer && bikeRouteGeo?.features?.map((feature: any, i: number) => {
+            const d = pathGenerator(feature);
+            if (!d) return null;
+            return (
+              <path
+                key={`route-${i}`}
+                d={d}
+                fill="none"
+                stroke="#fdba74"
+                strokeWidth={1 / transform.k}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                opacity={0.6}
+                pointerEvents="none"
               />
             );
           })}

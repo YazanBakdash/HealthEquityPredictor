@@ -102,6 +102,8 @@ function formatLayerValue(layerId: MapLayerId, v: number): string {
   return `${v.toFixed(decimals)}${meta?.unit ?? ''}`;
 }
 
+
+
 function geometryMarkerId(g: GeometryInput): string | null {
   if (g.feature_type !== 'school' && g.feature_type !== 'library') return null;
   if (g.dbId) return `db-${g.dbId}`;
@@ -250,8 +252,9 @@ export default function SimulatorPage() {
   const [bikeMiles, setBikeMiles] = useState<{x: number, y: number}[]>([]);
   const isBikeMilesLayer = mapLayerId === 'Bike_Miles';
   const [isDrawingMode, setIsDrawingMode] = useState(false);
-  /** On school/library layer: when on, map clicks place POIs; when off, clicks select tracts. */
   const [addPoiMode, setAddPoiMode] = useState(false);
+  const [bikeTrailGeo, setBikeTrailGeo] = useState<any>(null);
+  const [bikeRouteGeo, setBikeRouteGeo] = useState<any>(null);
 
   const isSchoolLayer = mapLayerId === 'School_Density';
   const isLibraryLayer = mapLayerId === 'Library_Count';
@@ -468,6 +471,45 @@ export default function SimulatorPage() {
         setIsLoadingFeatures(false);
       });
   }, []);
+
+  // Load existing bike trails GeoJSON
+  useEffect(() => {
+    fetch('/bike_trails.geojson')
+      .then((r) => r.json())
+      .then(setBikeTrailGeo)
+      .catch((e) => console.error('Failed to load bike trails:', e));
+  }, []);
+
+  // Load existing on-street bike routes GeoJSON
+  useEffect(() => {
+    fetch('/bike_routes.geojson')
+      .then((r) => r.json())
+      .then(setBikeRouteGeo)
+      .catch((e) => console.error('Failed to load bike routes:', e));
+  }, []);
+
+
+  // Load existing bike trails GeoJSON
+useEffect(() => {
+  fetch('/bike_trails.geojson')
+    .then((r) => r.json())
+    .then((data) => {
+      console.log('Trails loaded:', data?.features?.length);
+      setBikeTrailGeo(data);
+    })
+    .catch((e) => console.error('Failed to load bike trails:', e));
+}, []);
+
+// Load existing on-street bike routes GeoJSON
+useEffect(() => {
+  fetch('/bike_routes.geojson')
+    .then((r) => r.json())
+    .then((data) => {
+      console.log('Routes loaded:', data?.features?.length);
+      setBikeRouteGeo(data);
+    })
+    .catch((e) => console.error('Failed to load bike routes:', e));
+}, []);
 
   // If simulationId present, load geometry/features from Supabase; seed CPS/libraries when empty.
   useEffect(() => {
@@ -1182,6 +1224,7 @@ export default function SimulatorPage() {
                   setHoveredTract={setHoveredTract}
                   selectedTractId={selectedTractId}
                   setSelectedTractId={setSelectedTractId}
+                  bikeRouteGeo={bikeRouteGeo}
                   setMousePos={setMousePos}
                   fillForTract={fillForTract}
                   showSatellite={showSatellite}
@@ -1190,6 +1233,7 @@ export default function SimulatorPage() {
                   isBikeMilesLayer={isBikeMilesLayer}
                   isDrawingMode={isDrawingMode}
                   setIsDrawingMode={setIsDrawingMode}
+                  bikeTrailGeo={bikeTrailGeo}
                   markers={markers}
                   isMarkerLayer={isMarkerLayer}
                   addPoiMode={addPoiMode}

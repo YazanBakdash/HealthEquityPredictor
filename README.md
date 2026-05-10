@@ -1,148 +1,184 @@
-# Health Equity Predictor
+# PoliMap
 
-Interactive choropleth map of Chicago census tracts with 10 infrastructure/equity features, designed to feed a random forest model predicting health outcomes.
+![Map screenshot](images/demo.png)
+Chicago census-tract choropleth with ten infrastructure / equity layers, baseline **Area Deprivation Index (ADI)** from tract-level data, and a policy simulator (draw bike routes, adjust parks, place schools/libraries). The simulator can call a Python service to **recompute tract features** and **predict ADI** from a trained model (`server/model.pkl` when present).
 
-## Quick Start
+## Quick start
 
-**Prerequisites:** Node.js, Python 3.10+
+**Prerequisites:** Node.js 18+, Python 3.10+ (for data pipeline and optional API).
 
 ```bash
 npm install
 npm run dev
 ```
 
-## Data Pipeline
+The Vite dev server defaults to port **3000** (see `package.json`). Sign-in and saved simulations use **Supabase**; copy `.env.example` to `.env` and set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` for full auth flows.
 
-All features are computed from raw data in `inputs_raw/` by a single script:
+## Authentication (Supabase)
+
+PoliMap uses **Supabase Auth** (email + password) to gate the simulator and persist per-user simulations.
+
+- **Client:** `src/lib/supabaseClient.ts` calls `createClient(VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY)`. Both env vars are **required** at build time — the client throws if either is missing.
+- **Auth provider:** `src/auth/AuthProvider.tsx` wraps the app, hydrates the session via `supabase.auth.getSession()`, and subscribes to `onAuthStateChange`. It exposes `signIn`, `signUp` (writes a `display_name` into both user metadata and a `public.profiles` row when the new sign-up returns a session), and `signOut`.
+- **Auth UI:** `src/AuthPage.tsx` (`/auth`) renders the combined sign-in / sign-up form with a `redirectTo` param so protected links return to where the user came from.
+- **Route guard:** `ProtectedRoute` in `src/App.tsx` redirects unauthenticated users from `/simulator`, `/my-simulations`, and `/profile` to `/auth?redirectTo=…`.
+- **Schema:** Migrations in `supabase/migrations/` create `public.profiles` (1-to-1 with `auth.users`), `public.simulations`, `public.simulation_geometry`, and `public.simulation_features`, each tied to `auth.users(id)` with row-level security so users only see their own rows.
+
+### Setup
+
+1. Create a Supabase project and copy the project URL + anon key into `.env`:
+
+   ```env
+   VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+   VITE_SUPABASE_ANON_KEY=your-anon-key
+   ```
+
+2. Apply the SQL migrations under `supabase/migrations/` (Supabase CLI `supabase db push`, or paste them into the SQL editor in dashboard order).
+3. In **Authentication → Providers**, enable **Email**. If you don't want a confirmation step during development, disable "Confirm email"; otherwise new sign-ups will see "Account created. Check your email if confirmation is enabled."
+4. The optional Flask API also reads `SUPABASE_SERVICE_ROLE_KEY` from `.env` for server-side actions; keep that secret out of the frontend.
+
+**Optional — live recalculation API** (used when configured in the app):
+
+```bash
+pip install -r server/requirements.txt
+# from repo root, with model + CSV in place
+python -m uvicorn server.app:app --reload
+```
+
+## Data pipeline
+
+The main end-to-end builder is **`scripts/build_features.py`**. It expects these to already exist:
+
+| Prerequisite | Role |
+|--------------|------|
+| `inputs_processed/census_data_out.csv` | ACS-style tract rows (`GEO_ID`); defines which Cook County tracts are candidates before the Chicago filter |
+| `inputs_processed/Business_Licenses_20260415_with_tracts.csv` | Geocoded active-license rows for small business and food access |
+
+Install Python dependencies, then run:
 
 ```bash
 pip install -r scripts/requirements.txt
 python scripts/build_features.py
 ```
 
-This produces:
+### Outputs (from `build_features.py`)
 
 | Output | Description |
-|---|---|
-| `inputs_processed/all_tract_features.csv` | 791 tracts x 10 density features + area + population |
-| `public/all_tract_features.csv` | Same file, served to the frontend |
-| `inputs_processed/combined_all_features.csv` | Above + 17 census variables from ACS |
-| `inputs_processed/chicago_tract_list.csv` | List of included tract IDs |
-| `public/census_tracts.json` | GeoJSON boundaries for the frontend map |
+|--------|-------------|
+| `inputs_processed/all_tract_features.csv` | **791** tracts × 10 feature columns + `Tract_Area_SqMi` + `Population` (all density-scaled per script rules) |
+| `public/all_tract_features.csv` | Same write as above for the static dev server |
+| `inputs_processed/combined_all_features.csv` | Feature columns merged with `census_data_out.csv` (wider ACS-style table) |
+| `inputs_processed/chicago_tract_list.csv` | Sorted list of included `census_tract` IDs |
+| `public/census_tracts.json` | Tract polygons (GeoJSON, WGS84) for the map |
 
-## Tract Selection
+**ADI column:** `build_features.py` does **not** add `adi`. The repository’s `public/all_tract_features.csv` includes a merged **`adi`** column for the default ADI choropleth; after regenerating features, merge baseline ADI from your source (e.g. `data/adi.csv`) if the simulator needs it.
 
-Tracts are derived from the **2025 Census Bureau shapefile** (`IL_tracts/cb_2025_17_tract_500k.shp`), filtered to Cook County, then filtered to Chicago using CTA bus stop coverage (tracts containing CTA stops OR whose centroid falls within a 0.5-mile buffered convex hull of all CTA stops). Additional exclusions:
+**Other scripts** (maintenance / one-offs): `scripts/recalculate_all_features.py`, `scripts/combine_processed_features.py`, `scripts/assign_points_to_tracts.py`, `scripts/compute_bike_lane_miles_by_tract.py`, etc. The **canonical** bike-mile logic for the shipped pipeline is inside `build_features.py` (see below).
 
-- 4 anomalous tracts (`17031760900`, `17031770600`, `17031770700`, `17031000000`)
-- 98 western suburban tracts in the 8056-8229 range (no raw data coverage)
-- `17031030702` (0.006 sq mi, extreme density outlier)
-- `17031980100` (Midway Airport, population 18, extreme per-capita outlier)
+**Map bike overlays:** The UI loads `public/bike_routes.geojson` and `public/bike_trails.geojson`. Regenerate or refresh these from `inputs_raw` as needed (e.g. `inputs_raw/csvtojson.py` for routes from the City CSV).
 
-Final count: **791 tracts**.
+## Tract selection
 
-## Feature Calculations
+1. Load **2025 Census cartographic boundary** tracts: `IL_tracts/cb_2025_17_tract_500k.shp`, Cook County (`COUNTYFP == "031"`).
+2. Keep tracts whose `GEOID` (as `census_tract`) appears in `census_data_out.csv`.
+3. **Chicago footprint:** tract intersects a Chicago CTA bus stop (`CTA_BusStops.zip`, `CITY == CHICAGO`) **or** tract centroid lies inside a **0.5-mile** buffer (2,640 ft in projected CRS) around the **convex hull** of those stops.
+4. Always include **`17031840000`** (explicit allowlist).
+5. Remove **`17031760900`, `17031770600`, `17031770700`, `17031000000`**.
+6. Remove tracts whose **six-digit tract suffix** (characters 5–10 of the 11-character GEOID) falls in **805600–822900** (western suburban band without raw-data coverage).
+7. Remove **`17031030702`** and **`17031980100`** (documented small-area / outlier drops).
 
-All spatial operations use **EPSG:3435** (Illinois State Plane East, feet) for accurate distance/area measurements. Features are computed as raw counts first, then converted to densities.
+Final tract count: **791**.
 
-### Tree Canopy (`Tree_Canopy`)
+## Feature calculations
 
-- **Unit:** Percentage of tract area covered by tree canopy
-- **Source:** `inputs_raw/tree_canopy.geojson` (1,318 tract-level polygons with `PCT_Tree` and `FIPS`)
-- **Method:**
-  1. Direct FIPS match to census tract ID
-  2. Parent-tract fallback for 2020 Census sub-tract splits (e.g., `17031010201` falls back to `17031010200`)
-  3. Spatial area-weighted overlay for remaining unmatched tracts (intersection of tree canopy polygons with tract polygons, weighted by overlap area)
-  4. Any remaining NaN filled with 0.0
-- **Normalization:** None (already a percentage)
+All buffered distances and lengths use **EPSG:3435** (NAD83 Illinois East, US feet). Raw counts are joined or intersected in projected space, then converted to **densities** (per sq mi, per 1k population with a floor of **500**, or per 10k where noted).
 
-### Affordable Housing (`Affordable_Housing`)
+### Tree canopy (`Tree_Canopy`)
 
-- **Unit:** Subsidized/income-restricted rental units per 1,000 residents
-- **Source:** `inputs_raw/Affordable_Rental_Housing_Developments_20260415.csv` (598 developments with lat/lon and `Units` count)
-- **Method:** Each tract boundary is buffered by **0.5 miles**. Housing developments are spatially joined to buffered tracts. The `Units` column is summed per tract. A single development may count toward multiple tracts if it falls within overlapping buffers.
-- **Normalization:** Divided by (population / 1,000), with a population floor of 500
+- **Unit:** Percent canopy cover (0–100 scale from source).
+- **Source:** `inputs_raw/tree_canopy.geojson` (`PCT_Tree`, `FIPS`).
+- **Method:** FIPS match → parent-tract `…XX` → `…00` fallback → area-weighted overlay of canopy polygons on tract geometry for remaining gaps → fill NaN with 0.
+- **Normalization:** None (already a percentage).
+
+### Affordable housing (`Affordable_Housing`)
+
+- **Unit:** Subsidized / income-restricted **units per 1,000 residents** (population floor 500).
+- **Source:** `inputs_raw/Affordable_Rental_Housing_Developments_20260415.csv` (`Latitude`, `Longitude`, `Units`).
+- **Method:** Points joined to tracts buffered by **0.5 mi**; `Units` summed (a site can count toward multiple tracts).
+- **Normalization:** Sum ÷ (`Population` / 1000, clipped at 500).
 
 ### Parks (`Parks`)
 
-- **Unit:** Park acreage per square mile of tract area
-- **Source:** `inputs_raw/CPD_Parks_20260416.csv` (617 park polygons in WKT format)
-- **Method:** Park polygons are intersected with tract boundaries buffered by **0.25 miles**. The area of each intersection polygon is computed in square feet and converted to acres. Acres are summed per tract.
-- **Normalization:** Divided by tract area in square miles
+- **Unit:** Park **acres per square mile** of tract area.
+- **Source:** `inputs_raw/CPD_Parks_20260416.csv` (`the_geom` WKT).
+- **Method:** Park polygons intersected with tracts buffered by **0.25 mi**; intersection areas summed as acres.
+- **Normalization:** Acres ÷ tract area (sq mi).
 
-### Transit Stops (`Transit_Stop`)
+### Transit stops (`Transit_Stop`)
 
-- **Unit:** CTA bus + Metra stops per 10,000 residents
-- **Source:**
-  - `inputs_raw/CTA_BusStops.zip` (9,917 Chicago stops)
-  - `inputs_raw/Metra_Stations.zip` (73 Chicago stations)
-- **Method:** Both datasets are filtered to `CITY = CHICAGO`. Stops are spatially joined to tract polygons (point-in-polygon, no buffer). CTA and Metra counts are summed per tract.
-- **Normalization:** Divided by (population / 1,000), then multiplied by 10 to get per-10,000 rate
+- **Unit:** **CTA bus + Metra** stops **per 10,000 residents** (population floor 500).
+- **Sources:** `inputs_raw/CTA_BusStops.zip` (`CITY == CHICAGO`), `inputs_raw/Metra_Stations.zip` (Chicago via `MUNICIPALI`).
+- **Method:** Point-in-tract spatial join on **unbuffered** tract polygons (`intersects`); CTA and Metra counts added per tract.
+- **Normalization:** Count ÷ (`Population` / 1000), then × **10** for per-10k display.
 
-### Bike Miles (`Bike_Miles`)
+### Bike miles (`Bike_Miles`)
 
-- **Unit:** Protected bike lane + off-street trail miles per square mile
-- **Sources:**
-  - `inputs_raw/Bike_Routes_20260415.csv` (WKT line geometries, filtered to Protected Bike Lane, Buffered Bike Lane, and Greenway categories: 358 of 1,008 routes)
-  - `inputs_raw/Off-Street_Bike_Trails.geojson` (3,381 trail segments)
-- **Method:** Both datasets are combined into a single line GeoDataFrame. Lines are intersected with tract boundaries buffered by **0.25 miles**. The length of each clipped segment is measured in feet and converted to miles, then summed per tract.
-- **Normalization:** Divided by tract area in square miles
+- **Unit:** On-street + off-street **lane miles per square mile** of tract area (after **0.25 mi** tract buffer used for intersection length).
+- **On-street source:** `inputs_raw/Bike_Routes_20260415.csv` — rows where `DISPLAYROU` (trimmed) is one of **`Protected Bike Lane`**, **`Buffered Bike Lane`**, **`Greenway`** (WKT in `the_geom`).
+- **Off-street source:** `inputs_raw/Off-Street_Bike_Trails.geojson` — **all** line geometries are merged in this pipeline (no Chicago-only / status filter here).
+- **Method:** Combined lines intersected with **0.25 mi** buffered tracts; clipped segment lengths summed in feet → miles per tract.
+- **Normalization:** Miles ÷ tract area (sq mi).
 
-### Wi-Fi Hotspots (`Wifi_Hotspots`)
+### Wi‑Fi hotspots (`Wifi_Hotspots`)
 
-- **Unit:** Public Wi-Fi hotspots per square mile
-- **Source:** `inputs_raw/Connect_Chicago_Locations_-_Historical_20260416.csv` (259 locations with lat/lon)
-- **Method:** Hotspot points are spatially joined to tract boundaries buffered by **0.5 miles**. Count per tract.
-- **Normalization:** Divided by tract area in square miles
+- **Unit:** Count **per square mile** of tract area.
+- **Source:** `inputs_raw/Connect_Chicago_Locations_-_Historical_20260416.csv`.
+- **Method:** Points joined to tracts buffered by **0.5 mi**.
+- **Normalization:** Count ÷ tract area (sq mi).
 
-### School Density (`School_Density`)
+### School density (`School_Density`)
 
-- **Unit:** Public K-12 schools per 10,000 residents
-- **Source:** `inputs_raw/Chicago_Public_Schools_-_School_Profile_Information_SY2425.csv` (652 schools with lat/lon)
-- **Method:** School points are spatially joined to tract boundaries buffered by **0.5 miles**. Count per tract.
-- **Normalization:** Divided by (population / 1,000), then multiplied by 10 to get per-10,000 rate
+- **Unit:** CPS points **per 10,000 residents** (floor 500).
+- **Source:** `inputs_raw/Chicago_Public_Schools_-_School_Profile_Information_SY2425.csv` (`School_Latitude`, `School_Longitude`).
+- **Method:** Points joined to tracts buffered by **0.5 mi**.
+- **Normalization:** Count ÷ (`Population` / 1000), then × 10.
 
-### Library Count (`Library_Count`)
+### Library count (`Library_Count`)
 
-- **Unit:** Public library branches per 10,000 residents
-- **Source:** `inputs_raw/Libraries_-_Locations,_Contact_Information,_and_Usual_Hours_of_Operation_20260415.csv` (81 libraries, coordinates parsed from `LOCATION` field in `(lat, lon)` format)
-- **Method:** Library points are spatially joined to tract boundaries buffered by **1.0 mile** (larger buffer because libraries are sparse and serve wide areas). Count per tract.
-- **Normalization:** Divided by (population / 1,000), then multiplied by 10 to get per-10,000 rate
+- **Unit:** Library points **per 10,000 residents** (floor 500).
+- **Source:** `inputs_raw/Libraries_-_Locations,_Contact_Information,_and_Usual_Hours_of_Operation_20260415.csv` — coordinates parsed from the `LOCATION` field `(lat, lon)`.
+- **Method:** Points joined to tracts buffered by **1.0 mi**.
+- **Normalization:** Count ÷ (`Population` / 1000), then × 10.
 
-### Small Business (`Small_Business`)
+### Small business (`Small_Business`)
 
-- **Unit:** Active business licenses per 1,000 residents
-- **Source:** `inputs_processed/Business_Licenses_20260415_with_tracts.csv` (1.19M rows, filtered to `LICENSE STATUS = AAI`, deduplicated by `ACCOUNT NUMBER` + `SITE NUMBER`: 237,200 unique businesses with coordinates)
-- **Method:** Business points are spatially joined to tract polygons using **point-in-polygon** (no buffer). Count per tract.
-- **Normalization:** Divided by (population / 1,000)
+- **Unit:** Active licenses **per 1,000 residents** (floor 500).
+- **Source:** `inputs_processed/Business_Licenses_20260415_with_tracts.csv` — `LICENSE STATUS` normalized to **`AAI`**, deduped by `ACCOUNT NUMBER` + `SITE NUMBER`.
+- **Method:** Point-in-tract (`within`), **no** buffer.
+- **Normalization:** Count ÷ (`Population` / 1000).
 
-### Food Access (`Food_Access`)
+### Food access (`Food_Access`)
 
-- **Unit:** Retail food / grocery licenses per 1,000 residents
-- **Source:** Same as Small Business, filtered to licenses matching `Retail Food Establishment` or `Produce Merchant`
-- **Method:** Subset of the small business spatial join, filtered by license description. Count per tract.
-- **Normalization:** Divided by (population / 1,000)
+- **Unit:** Retail food / grocery licenses **per 1,000 residents** (floor 500).
+- **Source:** Same business table as small business.
+- **Method:** Same spatial join, filtered to descriptions matching **`Retail Food Establishment`** or **`Produce Merchant`** (case-insensitive).
+- **Normalization:** Count ÷ (`Population` / 1000).
 
-## Census Variables
+## Census variables
 
-The `combined_all_features.csv` file adds 17 variables from `inputs_processed/census_data_out.csv` (American Community Survey via Census Bureau):
+`combined_all_features.csv` joins the feature table with **`inputs_processed/census_data_out.csv`** (ACS-derived columns). Exact column set follows that CSV’s headers.
 
-- Education: % with <9 years education, % with high school diploma, % in white-collar occupations
-- Employment: Unemployment rate
-- Income/poverty: Median family income, % families below poverty, % below 150% poverty threshold, log ratio low-to-high income
-- Housing: Median home value, median gross rent, median monthly mortgage, % owner-occupied, % without plumbing, % single-parent households
-- Access: % without motor vehicle, % without telephone, % with >1 person per room
+## Population
 
-## Population Data
-
-Population counts are from the **2020 Decennial Census** (`inputs_raw/DECENNIALDHC2020.P1-Data.csv`), table P1 (total population by tract).
+Tract **population** comes from **2020 Decennial** table P1: `inputs_raw/DECENNIALDHC2020.P1-Data.csv` (`P1_001N` by `GEO_ID`).
 
 ## Frontend
 
-React + TypeScript + D3.js choropleth map with:
+- **Stack:** React 19, TypeScript, Vite, Tailwind v4, **D3** for projection/path generation, Motion for light UI animation.
+- **Routes:** `/` landing, `/auth`, `/simulator` (map + layers + drawing), `/my-simulations`, `/profile`.
+- **Map:** Choropleth for ADI and each infrastructure column from `public/all_tract_features.csv`; color scale uses the **95th percentile** of positive values as the high end to limit outlier stretch.
+- **Layers:** Satellite basemap toggle, hover/selection, optional markers (schools/libraries) and bike-route drawing on relevant layers; baseline bike GeoJSON is clipped visually to tract interiors in the bike layer.
 
-- Layer switcher for all 10 features + simulated ADI
-- Color scale capped at 95th percentile to prevent outlier compression
-- ESRI satellite imagery toggle
-- Hover tooltips and tract selection
-- Policy simulation sliders (ADI mode)
+## Modeling (reference)
+
+R workflows live under `r-script/` (tidymodels RF on `data/adi_cleaned.csv`). `ieee_train_model.py` and `server/train_model.py` are Python-side alternatives for RF from the combined feature + ADI table.

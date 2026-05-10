@@ -82,7 +82,7 @@ export const MAP_LAYER_ORDER: LayerMeta[] = [
   {
     id: 'Transit_Stop',
     label: 'Transit stops',
-    subtitle: 'CTA bus + Metra stops per 10,000 residents (0.5 mi buffer)',
+    subtitle: 'CTA bus + Metra stops per 10,000 residents (tract polygon)',
     colorRamp: 'purples',
     unit: ' / 10k',
     decimals: 0,
